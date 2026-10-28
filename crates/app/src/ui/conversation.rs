@@ -739,9 +739,12 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
 /// Private API, the tapbacks and Reply. Without anything to offer, no
 /// menu.
 fn with_menu(content: Stateful<Div>, b: &Item_, rcx: &RenderCx) -> AnyElement {
-    let can_act = rcx.private_api && !b.row.is_pending() && !b.row.is_failed();
+    // Tapbacks and replies show greyed out without the Private API, which
+    // the server needs to send them, so it's clear why they don't work.
+    let actionable = !b.row.is_pending() && !b.row.is_failed();
+    let can_act = rcx.private_api && actionable;
     let text = b.text.clone();
-    if !can_act && text.is_none() {
+    if !actionable && text.is_none() {
         return content.into_any_element();
     }
     let session = rcx.session.clone();
@@ -761,35 +764,49 @@ fn with_menu(content: Stateful<Div>, b: &Item_, rcx: &RenderCx) -> AnyElement {
     };
     content
         .context_menu(move |mut menu, _, _| {
-            if can_act {
+            if actionable {
+                if !can_act {
+                    menu = menu.item(PopupMenuItem::label(
+                        "Tapbacks and replies need the server's Private API",
+                    ));
+                }
                 for t in Tapback::CLASSIC {
                     let on = mine.as_ref() == Some(&t);
                     let (session, chat_guid, guid) =
                         (session.clone(), chat_guid.clone(), guid.clone());
                     let label = format!("{}  {}", glyph_text(&t), tapback_name(&t));
-                    menu = menu.item(PopupMenuItem::new(label).checked(on).on_click(
-                        move |_, _, cx| {
-                            if let Some(session) = session.upgrade() {
-                                // Choosing your own tapback again takes it off.
-                                session
-                                    .read(cx)
-                                    .engine
-                                    .react(&chat_guid, &guid, 0, t.clone(), on);
-                            }
-                        },
-                    ));
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(on)
+                            .disabled(!can_act)
+                            .on_click(move |_, _, cx| {
+                                if let Some(session) = session.upgrade() {
+                                    // Choosing your own tapback again takes it off.
+                                    session.read(cx).engine.react(
+                                        &chat_guid,
+                                        &guid,
+                                        0,
+                                        t.clone(),
+                                        on,
+                                    );
+                                }
+                            }),
+                    );
                 }
                 let (composer, reply) = (composer.clone(), reply.clone());
-                menu = menu.separator().item(PopupMenuItem::new("Reply").on_click(
-                    move |_, window, cx| {
-                        if let Some(composer) = composer.as_ref().and_then(|c| c.upgrade()) {
-                            Composer::reply(&composer, reply.clone(), window, cx);
-                        }
-                    },
-                ));
+                menu =
+                    menu.separator()
+                        .item(PopupMenuItem::new("Reply").disabled(!can_act).on_click(
+                            move |_, window, cx| {
+                                if let Some(composer) = composer.as_ref().and_then(|c| c.upgrade())
+                                {
+                                    Composer::reply(&composer, reply.clone(), window, cx);
+                                }
+                            },
+                        ));
             }
             if let Some(text) = text.clone() {
-                if can_act {
+                if actionable {
                     menu = menu.separator();
                 }
                 menu = menu.item(PopupMenuItem::new("Copy").on_click(move |_, _, cx| {
