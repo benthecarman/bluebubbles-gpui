@@ -1,0 +1,13 @@
+[package]
+name = "bb-store"
+description = "The local SQLite cache of one BlueBubbles Server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bb-api = { path = "../api" }
+rusqlite = { version = "0.38", features = ["bundled"] }
+serde_json.workspace = true
+thiserror.workspace = true
