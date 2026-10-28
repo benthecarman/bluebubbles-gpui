@@ -2,6 +2,7 @@
 //! unread dot, newest first, with search.
 
 use crate::session::{Session, SessionEvent};
+use crate::shell::OpenSettings;
 use crate::ui::people::{self, Photos};
 use crate::ui::time;
 use crate::ui::window_controls::{self, Side};
@@ -9,6 +10,7 @@ use bb_core::{Connection, Names};
 use bb_store::ChatRow;
 use bb_ui::{ActiveTheme, Avatar, Icon, icon};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -315,6 +317,20 @@ impl Render for Sidebar {
                 )
                 .children(window_controls::buttons(Side::Left, window, cx))
                 .child(div().flex_1())
+                .child(
+                    window_controls::not_title_bar(
+                        div()
+                            .id("settings")
+                            .p(px(4.))
+                            .rounded(px(5.))
+                            .hover(|s| s.bg(colors.sidebar_hover))
+                            .tooltip(|window, cx| Tooltip::new("Settings").build(window, cx))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(OpenSettings), cx)
+                            }),
+                    )
+                    .child(icon(Icon::Gear, px(18.)).text_color(colors.text_secondary)),
+                )
                 .child(
                     window_controls::not_title_bar(
                         div()

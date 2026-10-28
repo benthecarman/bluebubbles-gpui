@@ -23,6 +23,7 @@ gpui-kit.workspace = true
 # For its activation-token patch; third_party/README.md.
 gpui-pre-linux = "0.3.8"
 image.workspace = true
+ksni = { version = "0.3", default-features = false, features = ["async-io"] }
 oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
 serde.workspace = true
 serde_json.workspace = true

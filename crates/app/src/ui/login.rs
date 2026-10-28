@@ -1,7 +1,6 @@
 //! Sign in: the server's address and password, checked against the
 //! server before anything is saved.
 
-use crate::config::Config;
 use crate::credentials;
 use crate::runtime::Runtime;
 use crate::ui::window_controls::{self, Side};
@@ -105,11 +104,8 @@ impl Login {
                 this.busy = false;
                 match result {
                     Ok(Ok(stored)) => {
-                        let mut config = Config::load();
-                        config.server_url = Some(server.url.to_string());
-                        if let Err(e) = config.save() {
-                            tracing::error!("saving settings: {e}");
-                        }
+                        let url = server.url.to_string();
+                        crate::shell::update_config(cx, |c| c.server_url = Some(url));
                         if stored == credentials::Where::File {
                             this.note = Some("No keyring is available, so the password is kept in a file only you can read.".into());
                         }

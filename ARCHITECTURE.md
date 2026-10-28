@@ -141,10 +141,19 @@ clears after 60 s without an update.
 - A second launch hands over to the running instance through a Unix
   socket, with its activation token, so the window comes forward on
   Wayland.
-- Closing the window keeps the app running only when the user turned on
-  "keep running in the background"; Quit always exits.
-- Settings live in SQLite and are written in transactions, so they cannot
-  be half-written.
+- Notifications are shown while the window is hidden or unfocused, and
+  for every chat except the open one while it has focus. Settings has a
+  test button that reports which notification server answered.
+- A StatusNotifierItem puts the app in the top bar (GNOME needs the
+  AppIndicator extension, which Ubuntu turns on). It has Open, Settings
+  and Quit, and a red dot while conversations are unread. The dock gets
+  the unread count through the Unity LauncherEntry signal.
+- Closing the window keeps the app running in the tray unless that is
+  turned off in Settings. With no tray to come back from, closing quits.
+  The session lives outside the window, so reopening it is instant.
+  Ctrl+Q and the tray's Quit always exit.
+- Settings are a JSON file in the config directory, written to a
+  temporary file and renamed, so they cannot be half-written.
 
 ## Packaging
 

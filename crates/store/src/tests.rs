@@ -196,6 +196,24 @@ fn derives_unread_from_messages_and_read_state() {
 }
 
 #[test]
+fn counts_unread_chats_that_arent_muted() {
+    let (store, chat) = store_with_chat();
+    assert_eq!(store.unread_chat_count().unwrap(), 0);
+    store
+        .apply(Batch {
+            messages: vec![(None, incoming("g1", "hey", 1_000))],
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(store.unread_chat_count().unwrap(), 1);
+    store.set_muted(chat, true).unwrap();
+    assert_eq!(store.unread_chat_count().unwrap(), 0);
+    store.set_muted(chat, false).unwrap();
+    store.mark_read_local(chat).unwrap();
+    assert_eq!(store.unread_chat_count().unwrap(), 0);
+}
+
+#[test]
 fn pages_history_by_date_and_hides_tapbacks() {
     let (store, chat) = store_with_chat();
     let mut batch = Batch::default();

@@ -8,6 +8,7 @@ use bb_core::{Names, Notification, Region};
 use bb_store::Store;
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use futures::channel::oneshot;
 use std::collections::HashMap;
 use zbus::zvariant::{Structure, Value};
 
@@ -35,6 +36,8 @@ trait Notifications {
 
     fn get_capabilities(&self) -> zbus::Result<Vec<String>>;
 
+    fn get_server_information(&self) -> zbus::Result<(String, String, String, String)>;
+
     #[zbus(signal)]
     fn action_invoked(&self, id: u32, action_key: String) -> zbus::Result<()>;
 
@@ -50,6 +53,9 @@ trait Notifications {
 /// Longest side of the picture sent with a notification.
 const PICTURE: u32 = 128;
 const OPEN: &str = "default";
+/// The chat id recorded for the test notification: clicking it just
+/// shows the window.
+pub const NO_CHAT: i64 = -1;
 const MARK_READ: &str = "mark-read";
 
 /// What the user did with a notification.
@@ -67,6 +73,9 @@ pub enum Response {
 enum Request {
     Show(Notification, Option<Picture>),
     Withdraw(i64),
+    /// Sends a sample notification; answers with the notification
+    /// server's name and version, or why it couldn't.
+    Test(oneshot::Sender<Result<String, String>>),
 }
 
 /// An RGBA picture for the `image-data` hint.
@@ -125,6 +134,15 @@ impl Notifier {
     pub fn withdraw(&self, chat_id: i64) {
         let _ = self.requests.unbounded_send(Request::Withdraw(chat_id));
     }
+
+    /// Sends a sample notification. Resolves to the desktop's notification
+    /// server ("gnome-shell 50.0"), or the reason none showed.
+    pub async fn test(&self) -> Result<String, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.unbounded_send(Request::Test(tx));
+        rx.await
+            .unwrap_or_else(|_| Err("The desktop's notification service can't be reached".into()))
+    }
 }
 
 /// The contact photo of `address`, scaled for a notification.
@@ -152,6 +170,12 @@ async fn run(
 ) -> zbus::Result<()> {
     let connection = zbus::Connection::session().await?;
     let proxy = NotificationsProxy::new(&connection).await?;
+    match proxy.get_server_information().await {
+        Ok((name, _, version, spec)) => {
+            tracing::info!("notifications go to {name} {version} (spec {spec})")
+        }
+        Err(e) => tracing::warn!("no notification server yet: {e}"),
+    }
     // Asked when first needed: the notification server may start later
     // than the app.
     let mut capabilities: Option<Vec<String>> = None;
@@ -174,10 +198,7 @@ async fn run(
                     let (markup, actions) = (has("body-markup"), has("actions"));
                     let replaces = shown.get(&n.chat_id).copied().unwrap_or(0);
                     let (summary, body) = text(&n, markup);
-                    let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
-                    hints.insert("desktop-entry", Value::from(APP_ID));
-                    hints.insert("category", Value::from("im.received"));
-                    hints.insert("sound-name", Value::from("message-new-instant"));
+                    let mut hints = base_hints();
                     if let Some(p) = picture {
                         let image = Structure::from((
                             p.width as i32,
@@ -200,6 +221,7 @@ async fn run(
                         .await
                     {
                         Ok(id) => {
+                            tracing::info!("notification {id} for chat {}", n.chat_id);
                             if replaces != 0 && replaces != id {
                                 chats.remove(&replaces);
                             }
@@ -208,6 +230,34 @@ async fn run(
                         }
                         Err(e) => tracing::warn!("notify: {e}"),
                     }
+                }
+                Some(Request::Test(reply)) => {
+                    let server = proxy
+                        .get_server_information()
+                        .await
+                        .map(|(name, _, version, _)| format!("{name} {version}"));
+                    let actions: &[&str] = &[OPEN, "Open"];
+                    let sent = proxy
+                        .notify(
+                            "BlueBubbles",
+                            0,
+                            APP_ID,
+                            "Notifications are on",
+                            "New messages will show like this.",
+                            actions,
+                            base_hints(),
+                            -1,
+                        )
+                        .await;
+                    let result = match (sent, server) {
+                        (Ok(id), server) => {
+                            chats.insert(id, NO_CHAT);
+                            Ok(server.unwrap_or_else(|_| "the desktop".into()))
+                        }
+                        (Err(e), _) => Err(format!("The desktop refused it: {e}")),
+                    };
+                    tracing::info!("test notification: {result:?}");
+                    let _ = reply.send(result);
                 }
                 Some(Request::Withdraw(chat_id)) => {
                     if let Some(id) = shown.remove(&chat_id) {
@@ -249,6 +299,16 @@ async fn run(
             complete => return Ok(()),
         }
     }
+}
+
+/// What every notification says about the app: GNOME finds its name
+/// and icon, and its per-app settings, through the desktop entry.
+fn base_hints() -> HashMap<&'static str, Value<'static>> {
+    let mut hints = HashMap::new();
+    hints.insert("desktop-entry", Value::from(APP_ID));
+    hints.insert("category", Value::from("im.received"));
+    hints.insert("sound-name", Value::from("message-new-instant"));
+    hints
 }
 
 /// The summary and body: the chat's name over the message, with the

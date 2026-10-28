@@ -2,7 +2,7 @@
 //! views, and the engine's events re-emitted to views as GPUI events.
 
 use crate::config;
-use crate::notify::{Notifier, Response};
+use crate::notify::{self, Notifier, Response};
 use crate::runtime::Runtime;
 use crate::shell;
 use bb_api::ServerConfig;
@@ -11,6 +11,7 @@ use bb_store::{Changes, Store};
 use futures::StreamExt;
 use gpui_kit::*;
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -36,7 +37,9 @@ pub struct Session {
     pub region: Region,
     pub status: Status,
     typing: HashSet<i64>,
-    notifier: Notifier,
+    notifier: Rc<Notifier>,
+    counting: bool,
+    count_again: bool,
     _events: Task<()>,
     _responses: Task<()>,
 }
@@ -82,22 +85,64 @@ impl Session {
                     }
                 }
             });
-            Self {
+            let mut this = Self {
                 engine,
                 store,
                 region,
                 status,
                 typing: HashSet::new(),
-                notifier,
+                notifier: Rc::new(notifier),
+                counting: false,
+                count_again: false,
                 _events: pump,
                 _responses: responses,
-            }
+            };
+            this.count_unread(cx);
+            this
         }))
+    }
+
+    /// Re-counts unread conversations for the tray and the dock, off the
+    /// UI thread; a change while counting counts once more afterwards.
+    fn count_unread(&mut self, cx: &mut Context<Self>) {
+        if self.counting {
+            self.count_again = true;
+            return;
+        }
+        self.counting = true;
+        let store = self.store.clone();
+        let count = cx.background_spawn(async move { store.unread_chat_count() });
+        cx.spawn(async move |this, cx| {
+            let count = count.await;
+            let _ = this.update(cx, |this, cx| {
+                this.counting = false;
+                match count {
+                    Ok(n) => shell::set_unread(n, cx),
+                    Err(e) => tracing::warn!("counting unread chats: {e}"),
+                }
+                if std::mem::take(&mut this.count_again) {
+                    this.count_unread(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Sends a sample notification; see [`Notifier::test`].
+    pub fn test_notification(&self, cx: &App) -> Task<Result<String, String>> {
+        let notifier = self.notifier.clone();
+        cx.foreground_executor()
+            .spawn(async move { notifier.test().await })
     }
 
     fn on_event(&mut self, event: EngineEvent, cx: &mut Context<Self>) {
         match event {
-            EngineEvent::Changed(changes) => cx.emit(SessionEvent::Changed(changes)),
+            EngineEvent::Changed(changes) => {
+                if !changes.chats.is_empty() {
+                    self.count_unread(cx);
+                }
+                cx.emit(SessionEvent::Changed(changes));
+            }
             EngineEvent::ContactsChanged => cx.emit(SessionEvent::ContactsChanged),
             EngineEvent::Typing { chat_id, typing } => {
                 if typing {
@@ -107,7 +152,12 @@ impl Session {
                 }
                 cx.emit(SessionEvent::Typing { chat_id });
             }
-            EngineEvent::Notify(n) => self.notifier.show(n, cx.background_executor()),
+            EngineEvent::Notify(n) => {
+                if cx.global::<shell::Shell>().config.notifications() {
+                    tracing::info!("notifying for chat {}", n.chat_id);
+                    self.notifier.show(n, cx.background_executor());
+                }
+            }
             EngineEvent::ChatRead { chat_id } => self.notifier.withdraw(chat_id),
             EngineEvent::NotQueued { chat_guid, text } => {
                 cx.emit(SessionEvent::NotQueued { chat_guid, text });
@@ -130,7 +180,10 @@ impl Session {
             Response::Open {
                 chat_id,
                 activation_token,
-            } => cx.defer(move |cx| shell::show(Some(chat_id), activation_token, cx)),
+            } => {
+                let chat = Some(chat_id).filter(|&id| id != notify::NO_CHAT);
+                cx.defer(move |cx| shell::show(chat, activation_token, cx));
+            }
             Response::MarkRead { chat_id } => self.engine.mark_read(chat_id),
         }
     }

@@ -15,6 +15,10 @@ pub struct Config {
     pub accept_invalid_certs: bool,
     /// `system`, `light` or `dark`.
     pub appearance: Option<String>,
+    /// Closing the window keeps the app in the tray (default on).
+    pub keep_running: Option<bool>,
+    /// Desktop notifications for new messages (default on).
+    pub notifications: Option<bool>,
 }
 
 pub fn config_dir() -> PathBuf {
@@ -30,6 +34,14 @@ pub fn data_dir() -> PathBuf {
 }
 
 impl Config {
+    pub fn keep_running(&self) -> bool {
+        self.keep_running.unwrap_or(true)
+    }
+
+    pub fn notifications(&self) -> bool {
+        self.notifications.unwrap_or(true)
+    }
+
     pub fn load() -> Self {
         let path = config_dir().join("config.json");
         std::fs::read(&path)

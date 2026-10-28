@@ -433,6 +433,17 @@ impl Store {
         )?)
     }
 
+    /// Conversations with unread messages, not counting muted or archived
+    /// ones: the tray's dot and the dock's count.
+    pub fn unread_chat_count(&self) -> Result<usize> {
+        let n: i64 = self.lock().query_row(
+            "SELECT COUNT(*) FROM chats WHERE unread = 1 AND muted = 0 AND is_archived = 0",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
     /// Contact names and whether an avatar exists, for normalized addresses.
     pub fn contacts_for(&self, addresses: &[String]) -> Result<HashMap<String, ContactRow>> {
         if addresses.is_empty() {

@@ -1,12 +1,13 @@
 //! The window's root: the sign-in screen until a server is set up, then
 //! the conversations.
 
-use crate::config::Config;
 use crate::credentials;
 use crate::runtime::Runtime;
 use crate::session::Session;
+use crate::shell::{self, Shell};
 use crate::ui::login::{Login, LoginEvent};
 use crate::ui::main_view::{MainEvent, MainView};
+use crate::ui::settings::{Settings, SettingsEvent};
 use bb_api::{ServerConfig, parse_server_url};
 use bb_ui::{ActiveTheme, Preference, Theme, TypeStyled};
 use gpui_kit::component::window_border;
@@ -20,6 +21,7 @@ enum Screen {
 
 pub struct Workspace {
     screen: Screen,
+    settings: Option<Entity<Settings>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -31,9 +33,10 @@ impl Workspace {
         Theme::sync_system(window, cx);
         // GNOME's button-layout setting moves the window buttons.
         let buttons = window.observe_button_layout_changed(|window, _| window.refresh());
-        let appearance_setting = std::env::var("BB_APPEARANCE")
-            .ok()
-            .or(Config::load().appearance);
+        let appearance_setting =
+            std::env::var("BB_APPEARANCE")
+                .ok()
+                .or(cx.global::<Shell>().config.appearance.clone());
         let preference = match appearance_setting.as_deref() {
             Some("light") => Preference::Light,
             Some("dark") => Preference::Dark,
@@ -42,6 +45,7 @@ impl Workspace {
         Theme::set_preference(preference, cx);
         let mut this = Self {
             screen: Screen::Starting,
+            settings: None,
             _subscriptions: vec![appearance, buttons],
         };
         this.start(window, cx);
@@ -50,6 +54,11 @@ impl Workspace {
 
     /// Signs in with what was saved, or shows the sign-in screen.
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The window was closed to the tray and is back: same session.
+        if let Some(session) = shell::session(cx) {
+            self.show_main(session, window, cx);
+            return;
+        }
         // For development and screenshots against the mock server.
         if let (Ok(url), Ok(password)) = (std::env::var("BB_SERVER"), std::env::var("BB_PASSWORD"))
             && let Ok(url) = parse_server_url(&url)
@@ -57,7 +66,7 @@ impl Workspace {
             self.open_session(ServerConfig::new(url, password), window, cx);
             return;
         }
-        let config = Config::load();
+        let config = cx.global::<Shell>().config.clone();
         let Some(url) = config.server_url.clone() else {
             self.show_login(None, None, window, cx);
             return;
@@ -89,6 +98,27 @@ impl Workspace {
         }
     }
 
+    pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.is_some() {
+            return;
+        }
+        let settings = cx.new(|cx| Settings::new(window, cx));
+        let sub = cx.subscribe_in(
+            &settings,
+            window,
+            |this, _, event: &SettingsEvent, _, cx| match event {
+                SettingsEvent::Close => {
+                    this.settings = None;
+                    cx.notify();
+                }
+            },
+        );
+        self._subscriptions.push(sub);
+        settings.focus_handle(cx).focus(window, cx);
+        self.settings = Some(settings);
+        cx.notify();
+    }
+
     fn show_login(
         &mut self,
         url: Option<String>,
@@ -96,6 +126,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        shell::set_session(None, cx);
         let login = cx.new(|cx| Login::new(url, error, window, cx));
         let sub =
             cx.subscribe_in(
@@ -114,28 +145,8 @@ impl Workspace {
         let url = server.url.to_string();
         match Session::start(server, cx) {
             Ok(session) => {
-                let main = cx.new(|cx| MainView::new(session, window, cx));
-                let sub = cx.subscribe_in(
-                    &main,
-                    window,
-                    move |this, _, event: &MainEvent, window, cx| match event {
-                        MainEvent::SignedOut => {
-                            if matches!(this.screen, Screen::Main(_)) {
-                                this.show_login(
-                                    Some(url.clone()),
-                                    Some(
-                                        "The server refused the saved password. Sign in again."
-                                            .into(),
-                                    ),
-                                    window,
-                                    cx,
-                                );
-                            }
-                        }
-                    },
-                );
-                self._subscriptions.push(sub);
-                self.screen = Screen::Main(main);
+                shell::set_session(Some(session.clone()), cx);
+                self.show_main(session, window, cx);
             }
             Err(e) => {
                 tracing::error!("starting the session: {e:#}");
@@ -147,6 +158,30 @@ impl Workspace {
                 );
             }
         }
+        cx.notify();
+    }
+
+    fn show_main(&mut self, session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) {
+        let main = cx.new(|cx| MainView::new(session, window, cx));
+        let sub = cx.subscribe_in(
+            &main,
+            window,
+            move |this, _, event: &MainEvent, window, cx| match event {
+                MainEvent::SignedOut => {
+                    if matches!(this.screen, Screen::Main(_)) {
+                        let url = cx.global::<Shell>().config.server_url.clone();
+                        this.show_login(
+                            url,
+                            Some("The server refused the saved password. Sign in again.".into()),
+                            window,
+                            cx,
+                        );
+                    }
+                }
+            },
+        );
+        self._subscriptions.push(sub);
+        self.screen = Screen::Main(main);
         cx.notify();
     }
 }
@@ -163,9 +198,14 @@ impl Render for Workspace {
             div()
                 .messages_type()
                 .size_full()
+                .relative()
+                .on_action(cx.listener(|this, _: &shell::OpenSettings, window, cx| {
+                    this.open_settings(window, cx)
+                }))
                 .bg(colors.window)
                 .text_color(colors.text)
-                .child(content),
+                .child(content)
+                .children(self.settings.clone()),
         )
     }
 }
