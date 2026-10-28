@@ -139,10 +139,51 @@ pub(crate) async fn send(api: &Client, job: &Job, private_api: bool, give_up_at:
             if matches!(e, ApiError::Network(_)) && now_ms() < give_up_at {
                 Outcome::Offline
             } else {
-                Outcome::Failed(e.to_string())
+                Outcome::Failed(reason(&e))
             }
         }
-        Err(e) => Outcome::Failed(e.to_string()),
+        Err(e) => Outcome::Failed(reason(&e)),
+    }
+}
+
+/// What to show under a message that didn't send: the server's reason,
+/// and for the usual ones, what to change on the Mac.
+pub(crate) fn reason(e: &ApiError) -> String {
+    let text = match e {
+        ApiError::Server { message, .. } => {
+            // AppleScript errors arrive as "…execution error: <reason> (-1743)".
+            let message = message
+                .rsplit_once("execution error: ")
+                .map_or(message.as_str(), |(_, rest)| rest);
+            message.trim().trim_end_matches('.').to_owned()
+        }
+        ApiError::Timeout => "The server didn't answer in time".into(),
+        ApiError::Network(_) => "The server could not be reached".into(),
+        other => other.to_string(),
+    };
+    match hint(&text) {
+        Some(hint) => format!("{text}. {hint}"),
+        None => text,
+    }
+}
+
+const AUTOMATION: &str = "System Settings › Privacy & Security › Automation";
+
+fn hint(reason: &str) -> Option<String> {
+    let r = reason.to_ascii_lowercase();
+    if r.contains("-1743")
+        || r.contains("not authorized to send apple events")
+        || r.contains("not allowed to send apple events")
+    {
+        Some(format!(
+            "On the Mac, allow BlueBubbles to control Messages in {AUTOMATION}."
+        ))
+    } else if r.contains("-1712") || r.contains("timed out") || r.contains("didn't confirm") {
+        Some(format!(
+            "Check that Messages is open and signed in on the Mac, and that BlueBubbles may control it in {AUTOMATION}."
+        ))
+    } else {
+        None
     }
 }
 
@@ -225,5 +266,42 @@ pub(crate) fn mime_for(name: &str) -> &'static str {
         "key" => "application/vnd.apple.keynote",
         "numbers" => "application/vnd.apple.numbers",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server(message: &str) -> ApiError {
+        ApiError::Server {
+            status: 500,
+            message: message.into(),
+        }
+    }
+
+    #[test]
+    fn explains_why_a_send_failed() {
+        assert_eq!(
+            reason(&server(
+                "Error: Command failed: osascript\n0:1: execution error: Not authorized to send Apple events to Messages. (-1743)"
+            )),
+            "Not authorized to send Apple events to Messages. (-1743). On the Mac, allow \
+             BlueBubbles to control Messages in System Settings › Privacy & Security › Automation."
+        );
+        assert!(
+            reason(&server(
+                "Messages on the Mac didn't confirm the send within 2 minutes"
+            ))
+            .contains("open and signed in")
+        );
+        assert_eq!(
+            reason(&server("Invalid service: any.")),
+            "Invalid service: any"
+        );
+        assert_eq!(
+            reason(&ApiError::Timeout),
+            "The server didn't answer in time"
+        );
     }
 }

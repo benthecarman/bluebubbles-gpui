@@ -36,6 +36,9 @@ pub struct SendBehaviour {
     /// Messages rejects the next send with this error code (HTTP 500 with
     /// the message, and a `message-send-error` event).
     pub fail_with: Option<i64>,
+    /// The send never reaches Messages: HTTP 500 with this reason, as when
+    /// the server's AppleScript fails.
+    pub refuse_with: Option<String>,
     /// The send goes through, but the HTTP reply is an error (a timeout
     /// between the client and server).
     pub lose_reply: bool,
@@ -70,6 +73,8 @@ pub(crate) struct State {
     /// Requests for contact photos fail.
     pub fail_avatars: bool,
     pub send: SendBehaviour,
+    /// Every send is refused with this reason.
+    pub refuse_sends: Option<String>,
     pub requests: Vec<String>,
     pub ping_interval_ms: u64,
     pub ping_timeout_ms: u64,
@@ -133,6 +138,7 @@ impl MockServer {
                 contacts: Vec::new(),
                 fail_avatars: false,
                 send: SendBehaviour::default(),
+                refuse_sends: None,
                 requests: Vec::new(),
                 ping_interval_ms: 25_000,
                 ping_timeout_ms: 20_000,
@@ -168,6 +174,12 @@ impl MockServer {
         let mut s = self.shared.lock();
         s.ping_interval_ms = interval.as_millis() as u64;
         s.ping_timeout_ms = timeout.as_millis() as u64;
+    }
+
+    /// Refuses every send from now on with `reason`, as a server whose
+    /// AppleScript can't reach Messages does.
+    pub fn refuse_sends(&self, reason: Option<String>) {
+        self.shared.lock().refuse_sends = reason;
     }
 
     pub fn set_send_behaviour(&self, behaviour: SendBehaviour) {

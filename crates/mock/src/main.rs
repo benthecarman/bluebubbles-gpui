@@ -2,12 +2,16 @@
 //! without a Mac.
 //!
 //! Usage: bb-mock-server [--host 127.0.0.1] [--port 1234] [--password demo] [--live]
-//!                       [--no-private-api]
+//!                       [--live-every <seconds>] [--no-private-api]
+//!                       [--refuse-sends <reason>]
 //!
 //! `--host` binds another address, such as a Tailscale one.
 //! `--no-private-api` reports a server without the Private API helper.
+//! `--refuse-sends` fails every send with that reason, as a server whose
+//! AppleScript can't reach Messages does.
 //!
-//! `--live` makes someone type and send a message every so often.
+//! `--live` makes someone type and send a message every so often (every
+//! 20 seconds, or `--live-every`).
 
 use bb_mock::{MockServer, seed_demo};
 use std::time::Duration;
@@ -23,7 +27,9 @@ async fn main() {
     let mut port = 1234u16;
     let mut password = "demo".to_owned();
     let mut live = false;
+    let mut every: u64 = 20;
     let mut private_api = true;
+    let mut refuse: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -31,7 +37,12 @@ async fn main() {
             "--port" => port = args.next().and_then(|p| p.parse().ok()).unwrap_or(port),
             "--password" => password = args.next().unwrap_or(password),
             "--live" => live = true,
+            "--live-every" => {
+                live = true;
+                every = args.next().and_then(|s| s.parse().ok()).unwrap_or(every);
+            }
             "--no-private-api" => private_api = false,
+            "--refuse-sends" => refuse = args.next(),
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(2);
@@ -40,6 +51,7 @@ async fn main() {
     }
     let server = MockServer::start_on((host, port).into(), &password).await;
     seed_demo(&server);
+    server.refuse_sends(refuse);
     if !private_api {
         server.set_info(|i| {
             i.private_api = Some(false);
@@ -60,7 +72,7 @@ async fn main() {
         ];
         let mut i = 0;
         loop {
-            tokio::time::sleep(Duration::from_secs(20)).await;
+            tokio::time::sleep(Duration::from_secs(every)).await;
             let chat = format!("iMessage;-;{}", bb_mock::demo::ALEX);
             server.typing(&chat, true);
             tokio::time::sleep(Duration::from_secs(4)).await;

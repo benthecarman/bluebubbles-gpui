@@ -252,6 +252,12 @@ pub struct Client {
 
 /// Uploads and downloads get this many times the normal timeout.
 const TRANSFER_TIMEOUT_FACTOR: u32 = 12;
+/// The server waits up to 2 minutes for Messages to send a text, and up
+/// to 20 for a file, before it answers; wait a little longer than it.
+const SEND_TEXT_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+const SEND_FILE_TIMEOUT: Duration = Duration::from_secs(22 * 60);
+/// What the server answers when Messages never confirmed a send.
+const UNCONFIRMED: &str = "Failed to send message! See attached message error code.";
 
 impl Client {
     pub fn new(config: &ServerConfig) -> Result<Self, ApiError> {
@@ -443,11 +449,10 @@ impl Client {
 
     pub async fn send_text(&self, send: &SendText) -> Result<Message, ApiError> {
         let body = serde_json::to_value(send).map_err(|e| ApiError::Decode(e.to_string()))?;
-        // Sending waits for Messages; give it the transfer budget.
         let request = self
             .http
             .post(self.url("message/text", &[]))
-            .timeout(self.timeout * 4)
+            .timeout(SEND_TEXT_TIMEOUT.max(self.timeout))
             .json(&body);
         self.send_message(request).await
     }
@@ -475,7 +480,7 @@ impl Client {
         let request = self
             .http
             .post(self.url("message/attachment", &[]))
-            .timeout(self.timeout * TRANSFER_TIMEOUT_FACTOR)
+            .timeout(SEND_FILE_TIMEOUT.max(self.timeout * TRANSFER_TIMEOUT_FACTOR))
             .multipart(form);
         self.send_message(request).await
     }
@@ -496,7 +501,15 @@ impl Client {
         {
             return Ok(message);
         }
-        Err(error_for(status, envelope.map(|e| (e.message, e.error))))
+        match error_for(status, envelope.map(|e| (e.message, e.error))) {
+            ApiError::Server { status, message } if message == UNCONFIRMED => {
+                Err(ApiError::Server {
+                    status,
+                    message: "Messages on the Mac didn't confirm the send within 2 minutes".into(),
+                })
+            }
+            e => Err(e),
+        }
     }
 
     /// Adds a tapback (`love`, `like`, …) or removes one (`-love`, …).

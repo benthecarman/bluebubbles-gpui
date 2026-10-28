@@ -685,9 +685,20 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
                 Receipt::Failed => div()
                     .pr(px(4.))
                     .pt(px(2.))
+                    .flex()
+                    .flex_col()
+                    .items_end()
                     .text_size(m.caption())
-                    .text_color(colors.error)
-                    .child("Not Delivered")
+                    .child(div().text_color(colors.error).child("Not Delivered"))
+                    .when_some(failure(&b.row), |d, why| {
+                        d.child(
+                            div()
+                                .max_w(px(340.))
+                                .text_right()
+                                .text_color(colors.text_secondary)
+                                .child(why),
+                        )
+                    })
                     .into_any_element(),
             })
         });
@@ -720,6 +731,7 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
             d.child(
                 div()
                     .id(("retry", id as u64))
+                    .tooltip(|window, cx| Tooltip::new("Try Again").build(window, cx))
                     .ml(px(6.))
                     .mb(px(20.))
                     .cursor_pointer()
@@ -744,9 +756,18 @@ fn with_menu(content: Stateful<Div>, b: &Item_, rcx: &RenderCx) -> AnyElement {
     let actionable = !b.row.is_pending() && !b.row.is_failed();
     let can_act = rcx.private_api && actionable;
     let text = b.text.clone();
-    if !actionable && text.is_none() {
+    let failed = b.row.is_from_me && b.row.is_failed();
+    // A message the server never stored can be thrown away.
+    let local = b
+        .row
+        .server_rowid
+        .is_none()
+        .then(|| b.row.temp_guid.clone())
+        .flatten();
+    if !actionable && !failed && text.is_none() {
         return content.into_any_element();
     }
+    let id = b.row.id;
     let session = rcx.session.clone();
     let composer = rcx.composer.clone();
     let chat_guid = rcx.chat_guid.clone();
@@ -764,6 +785,22 @@ fn with_menu(content: Stateful<Div>, b: &Item_, rcx: &RenderCx) -> AnyElement {
     };
     content
         .context_menu(move |mut menu, _, _| {
+            if failed {
+                let session_ = session.clone();
+                menu = menu.item(PopupMenuItem::new("Try Again").on_click(move |_, _, cx| {
+                    if let Some(session) = session_.upgrade() {
+                        session.read(cx).engine.retry(id);
+                    }
+                }));
+                if let Some(temp) = local.clone() {
+                    let session = session.clone();
+                    menu = menu.item(PopupMenuItem::new("Delete").on_click(move |_, _, cx| {
+                        if let Some(session) = session.upgrade() {
+                            session.read(cx).engine.discard(&temp);
+                        }
+                    }));
+                }
+            }
             if actionable {
                 if !can_act {
                     menu = menu.item(PopupMenuItem::label(
@@ -806,7 +843,7 @@ fn with_menu(content: Stateful<Div>, b: &Item_, rcx: &RenderCx) -> AnyElement {
                         ));
             }
             if let Some(text) = text.clone() {
-                if actionable {
+                if actionable || failed {
                     menu = menu.separator();
                 }
                 menu = menu.item(PopupMenuItem::new("Copy").on_click(move |_, _, cx| {
@@ -816,6 +853,15 @@ fn with_menu(content: Stateful<Div>, b: &Item_, rcx: &RenderCx) -> AnyElement {
             menu
         })
         .into_any_element()
+}
+
+/// Why a message didn't send: the server's reason, or the error code
+/// Messages gave it.
+fn failure(row: &MessageRow) -> Option<String> {
+    row.send_error.clone().or_else(|| {
+        (row.error > 0)
+            .then(|| format!("Messages on the Mac couldn't send it (error {})", row.error))
+    })
 }
 
 fn tapback_name(t: &Tapback) -> String {

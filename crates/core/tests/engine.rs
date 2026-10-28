@@ -261,6 +261,43 @@ async fn the_open_chat_is_read_and_quiet() {
     wait_until(|| server.requests().contains(&read_path)).await;
 }
 
+#[tokio::test]
+async fn a_refused_send_says_why() {
+    let server = MockServer::start(PASSWORD).await;
+    server.add_chat(&dm(demo::ALEX), None, &[demo::ALEX]);
+    let (engine, _events, store) = synced(&server).await;
+    server.set_send_behaviour(SendBehaviour {
+        refuse_with: Some(
+            "Error: Command failed: osascript\n0:1: execution error: Not authorized to send \
+             Apple events to Messages. (-1743)"
+                .into(),
+        ),
+        ..Default::default()
+    });
+    engine.send_text(TextMessage {
+        chat_guid: dm(demo::ALEX),
+        text: "on my way".into(),
+        ..Default::default()
+    });
+    let chat = store.chat_by_guid(&dm(demo::ALEX)).unwrap().unwrap();
+    let mut row = None;
+    wait_until(|| {
+        row = store
+            .messages_before(chat.id, None, 10)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.is_failed());
+        row.is_some()
+    })
+    .await;
+    let error = row.unwrap().send_error.unwrap();
+    assert!(
+        error.starts_with("Not authorized to send Apple events"),
+        "{error}"
+    );
+    assert!(error.contains("Privacy & Security › Automation"), "{error}");
+}
+
 async fn send_and_settle(full_echo_first: bool, lose_reply: bool) {
     let server = MockServer::start(PASSWORD).await;
     server.add_chat(&dm(demo::ALEX), None, &[demo::ALEX]);

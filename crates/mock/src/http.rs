@@ -352,9 +352,23 @@ fn store_sent(s: &Shared, chat: &str, text: &str, edit: Option<&dyn Fn(&mut Mess
 
 /// The server's three answers to a send, with this mock's behaviour.
 async fn finish_send(s: &Shared, mut m: Message, temp: &str) -> Response {
-    let behaviour = std::mem::take(&mut s.lock().send);
+    let behaviour = {
+        let mut st = s.lock();
+        let mut behaviour = std::mem::take(&mut st.send);
+        behaviour.refuse_with = behaviour.refuse_with.or(st.refuse_sends.clone());
+        behaviour
+    };
     if !behaviour.delay.is_zero() {
         tokio::time::sleep(behaviour.delay).await;
+    }
+    if let Some(reason) = behaviour.refuse_with {
+        s.lock().messages.retain(|x| x.message.guid != m.guid);
+        let body = json!({
+            "status": 500,
+            "message": "Message Send Error",
+            "error": { "type": "iMessage Error", "message": reason },
+        });
+        return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(body)).into_response();
     }
     if let Some(code) = behaviour.fail_with {
         let guid = m.guid.clone();
