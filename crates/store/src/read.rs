@@ -3,7 +3,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use serde_json::Value;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChatRow {
     pub id: i64,
     pub guid: String,
@@ -35,7 +35,7 @@ impl ChatRow {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct AttachmentRow {
     pub guid: String,
     pub message_id: i64,
@@ -53,7 +53,7 @@ pub struct AttachmentRow {
     pub local_path: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MessageRow {
     pub id: i64,
     pub guid: String,
