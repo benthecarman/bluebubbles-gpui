@@ -5,6 +5,7 @@
 //! read) through [`Engine`]; they never talk to the server.
 
 pub mod address;
+pub mod avatar;
 mod downloads;
 mod engine;
 pub mod names;

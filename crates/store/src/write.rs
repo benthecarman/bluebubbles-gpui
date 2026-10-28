@@ -348,6 +348,22 @@ impl Store {
         Ok(())
     }
 
+    /// Sets the photos of known contacts; `None` removes one. Unknown ids
+    /// are skipped. Returns how many photos changed.
+    pub fn set_contact_avatars(&self, avatars: &[(String, Option<Vec<u8>>)]) -> Result<usize> {
+        let mut conn = self.lock();
+        let tx = crate::write_transaction(&mut conn)?;
+        let mut changed = 0;
+        for (id, avatar) in avatars {
+            changed += tx.execute(
+                "UPDATE contacts SET avatar = ?2 WHERE id = ?1 AND avatar IS NOT ?2",
+                params![id, avatar],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     pub fn outbox_push(
         &self,
         temp_guid: &str,

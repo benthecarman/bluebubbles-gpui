@@ -13,6 +13,8 @@ publish = false
 [workspace.dependencies]
 anyhow = "1"
 futures = "0.3"
+# Photo decoding: what Messages sends and contact pictures come in.
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 # GPUI (gpui-pre 0.3.8) and its base components, in one dependency.
 gpui-kit = "=0.7.1"
 serde = { version = "1", features = ["derive"] }

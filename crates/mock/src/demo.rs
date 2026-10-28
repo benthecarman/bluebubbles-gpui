@@ -18,6 +18,39 @@ const PHOTO: &[u8] = include_bytes!("../../../assets/icons/bluebubbles-512.png")
 const PREVIEW: &[u8] = include_bytes!("../../../assets/icons/bluebubbles-256.png");
 const PDF: &[u8] = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
 
+/// A made-up profile picture: a head and shoulders on a soft background,
+/// 600 pixels square as phone contact photos are.
+pub fn portrait(background: [u8; 3], hair: [u8; 3]) -> Vec<u8> {
+    const SIDE: u32 = 600;
+    let skin = [224.0, 182.0, 150.0];
+    let image = image::RgbImage::from_fn(SIDE, SIDE, |x, y| {
+        let (x, y) = (x as f32 / SIDE as f32, y as f32 / SIDE as f32);
+        let shade = 1.0 - 0.25 * y;
+        let mut c = background.map(|v| v as f32 * shade);
+        let head = ((x - 0.5) / 0.19).powi(2) + ((y - 0.42) / 0.23).powi(2);
+        let hair_top = ((x - 0.5) / 0.21).powi(2) + ((y - 0.36) / 0.21).powi(2);
+        let shoulders = ((x - 0.5) / 0.42).powi(2) + ((y - 1.02) / 0.3).powi(2);
+        if shoulders < 1.0 {
+            c = hair.map(|v| v as f32 * 0.6 + 60.0);
+        }
+        if hair_top < 1.0 && y < 0.38 {
+            c = hair.map(|v| v as f32);
+        }
+        if head < 1.0 && !(hair_top < 1.0 && y < 0.3) {
+            c = skin;
+        }
+        image::Rgb(c.map(|v| v.clamp(0.0, 255.0) as u8))
+    });
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(
+            &mut std::io::Cursor::new(&mut out),
+            image::ImageFormat::Jpeg,
+        )
+        .expect("encode a JPEG");
+    out
+}
+
 pub fn seed_demo(server: &MockServer) {
     let now = now_ms();
     server.add_contact("Mom", &[MOM], &[]);
@@ -25,6 +58,11 @@ pub fn seed_demo(server: &MockServer) {
     server.add_contact("Sam Rivera", &[SAM], &[]);
     server.add_contact("Jordan Lee", &[JORDAN], &[]);
     server.add_contact("Priya Shah", &[], &[PRIYA]);
+    // Jordan has no photo, so the list shows initials too.
+    server.set_contact_photo("Mom", &portrait([236, 160, 120], [120, 70, 50]));
+    server.set_contact_photo("Alex Kim", &portrait([110, 170, 230], [40, 50, 70]));
+    server.set_contact_photo("Sam Rivera", &portrait([150, 210, 140], [90, 60, 40]));
+    server.set_contact_photo("Priya Shah", &portrait([230, 140, 190], [30, 25, 25]));
 
     let mom = format!("iMessage;-;{MOM}");
     let alex = format!("iMessage;-;{ALEX}");

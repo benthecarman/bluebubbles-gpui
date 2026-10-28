@@ -3,6 +3,7 @@
 //! receipts or edits changed since the last sync.
 
 use crate::address::{self, Region};
+use crate::avatar;
 use crate::engine::{EngineError, Internal};
 use crate::now_ms;
 use bb_api::{Client, Message, MessageQuery, WhereClause};
@@ -16,6 +17,11 @@ pub(crate) const ROWID_KEY: &str = "sync.rowid";
 /// When the last sync started (ms).
 pub(crate) const RECONCILE_KEY: &str = "sync.reconciled_at";
 pub(crate) const CONTACTS_KEY: &str = "sync.contacts_at";
+/// When contact photos last arrived, and when they were last asked for.
+pub(crate) const AVATARS_KEY: &str = "sync.avatars_at";
+const AVATARS_TRIED_KEY: &str = "sync.avatars_tried_at";
+/// After a failed photo download, wait this long before asking again.
+const AVATAR_RETRY_MS: i64 = 30 * 60_000;
 
 /// 2001-01-01 in Unix ms: `where` clauses compare Apple-epoch nanoseconds.
 const APPLE_EPOCH_MS: i64 = 978_307_200_000;
@@ -189,40 +195,103 @@ impl Sync {
     }
 
     async fn contacts(&self) -> Result<(), EngineError> {
-        let last = self.store.get_i64(CONTACTS_KEY)?.unwrap_or(0);
-        if now_ms() - last < self.contacts_every.as_millis() as i64 {
-            return Ok(());
-        }
-        let contacts = self.api.contacts(true).await?;
-        let inputs: Vec<ContactInput> = contacts
-            .into_iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let mut addresses: Vec<String> = c
-                    .phone_numbers
-                    .iter()
-                    .chain(&c.emails)
-                    .map(|a| address::normalize(&a.address, self.region))
-                    .filter(|a| !a.is_empty())
-                    .collect();
-                addresses.sort();
-                addresses.dedup();
-                ContactInput {
-                    id: c.id.clone().unwrap_or_else(|| format!("contact-{i}")),
+        let every = self.contacts_every.as_millis() as i64;
+        let now = now_ms();
+        if now - self.store.get_i64(CONTACTS_KEY)?.unwrap_or(0) >= every {
+            // Names first and without photos: that response is small, so
+            // names show at once even when the photos take minutes.
+            let contacts = self.api.contacts(false).await?;
+            let inputs: Vec<ContactInput> = contacts
+                .iter()
+                .enumerate()
+                .map(|(i, c)| ContactInput {
+                    id: contact_id(c, i),
                     display_name: c.display_name.clone(),
                     first_name: c.first_name.clone(),
                     last_name: c.last_name.clone(),
                     nickname: c.nickname.clone(),
-                    addresses,
-                    avatar: c.avatar.as_deref().and_then(decode_base64),
+                    addresses: self.addresses(c),
+                    avatar: None,
+                })
+                .collect();
+            self.store.replace_contacts(&inputs)?;
+            self.store.set_i64(CONTACTS_KEY, now)?;
+            let _ = self.tx.send(Internal::ContactsChanged);
+        }
+        let due = now - self.store.get_i64(AVATARS_KEY)?.unwrap_or(0) >= every
+            && now - self.store.get_i64(AVATARS_TRIED_KEY)?.unwrap_or(0) >= AVATAR_RETRY_MS;
+        if due {
+            self.store.set_i64(AVATARS_TRIED_KEY, now)?;
+            let (api, store, tx) = (self.api.clone(), self.store.clone(), self.tx.clone());
+            tokio::spawn(async move {
+                match avatars(&api, &store).await {
+                    Ok(changed) => {
+                        let _ = store.set_i64(AVATARS_KEY, now_ms());
+                        if changed > 0 {
+                            let _ = tx.send(Internal::ContactsChanged);
+                        }
+                    }
+                    Err(e) => tracing::warn!("contact photos: {e}"),
                 }
-            })
-            .collect();
-        self.store.replace_contacts(&inputs)?;
-        self.store.set_i64(CONTACTS_KEY, now_ms())?;
-        let _ = self.tx.send(Internal::ContactsChanged);
+            });
+        }
         Ok(())
     }
+
+    fn addresses(&self, c: &bb_api::Contact) -> Vec<String> {
+        let mut addresses: Vec<String> = c
+            .phone_numbers
+            .iter()
+            .chain(&c.emails)
+            .map(|a| address::normalize(&a.address, self.region))
+            .filter(|a| !a.is_empty())
+            .collect();
+        addresses.sort();
+        addresses.dedup();
+        addresses
+    }
+}
+
+/// The server's id for a contact; its position for the few without one,
+/// which is the same in both contact responses.
+fn contact_id(c: &bb_api::Contact, index: usize) -> String {
+    c.id.clone().unwrap_or_else(|| format!("contact-{index}"))
+}
+
+/// Downloads every contact's photo and stores a small copy. Returns how
+/// many photos changed.
+async fn avatars(api: &Client, store: &Store) -> Result<usize, EngineError> {
+    let contacts = api.contacts(true).await?;
+    let store = store.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut unreadable: std::collections::BTreeMap<String, usize> = Default::default();
+        let photos: Vec<(String, Option<Vec<u8>>)> = contacts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let bytes = c.avatar.as_deref().and_then(decode_base64);
+                let photo = bytes.and_then(|b| match avatar::shrink(&b) {
+                    Ok(small) => Some(small),
+                    Err(e) => {
+                        *unreadable.entry(format!("{e:?}")).or_default() += 1;
+                        None
+                    }
+                });
+                (contact_id(c, i), photo)
+            })
+            .collect();
+        let found = photos.iter().filter(|(_, p)| p.is_some()).count();
+        tracing::info!("contact photos: {found} of {} contacts", photos.len());
+        if !unreadable.is_empty() {
+            tracing::warn!("contact photos the app can't read: {unreadable:?}");
+        }
+        Ok(store.set_contact_avatars(&photos)?)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!("contact photos: {e}");
+        Ok(0)
+    })
 }
 
 /// See [`Store::fits_history`]; a message with no chat can't be placed.

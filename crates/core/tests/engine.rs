@@ -153,6 +153,64 @@ async fn first_sync_fills_the_store_quietly() {
     assert_eq!(store.contact_count().unwrap(), 5);
 }
 
+fn contact_requests(server: &MockServer) -> usize {
+    let requests = server.requests();
+    requests
+        .iter()
+        .filter(|r| *r == "GET /api/v1/contact")
+        .count()
+}
+
+/// The photo stored for `address`, once there is one.
+async fn stored_photo(store: &Store, address: &str) -> Vec<u8> {
+    let mut photo = None;
+    wait_until(|| {
+        let contacts = store.contacts_for(&[address.to_owned()]).unwrap();
+        photo = contacts
+            .get(address)
+            .filter(|c| c.has_avatar)
+            .and_then(|c| store.contact_avatar(&c.id).unwrap());
+        photo.is_some()
+    })
+    .await;
+    photo.unwrap()
+}
+
+#[tokio::test]
+async fn contact_photos_are_stored_small() {
+    let server = MockServer::start(PASSWORD).await;
+    server.add_chat(&dm(demo::ALEX), None, &[demo::ALEX]);
+    server.add_contact("Alex Kim", &[], &[demo::ALEX]);
+    server.add_contact("Sam Rivera", &[demo::SAM], &[]);
+    server.set_contact_photo("Alex Kim", &demo::portrait([1, 2, 3], [4, 5, 6]));
+    let (_engine, _events, store) = synced(&server).await;
+
+    let photo = stored_photo(&store, demo::ALEX).await;
+    let image = image::load_from_memory(&photo).unwrap();
+    assert_eq!((image.width(), image.height()), (192, 192));
+    let sam = store.contacts_for(&[demo::SAM.to_owned()]).unwrap();
+    assert!(!sam[demo::SAM].has_avatar, "\"\" is no photo");
+    // One request for names, one for photos.
+    assert_eq!(contact_requests(&server), 2);
+}
+
+#[tokio::test]
+async fn names_arrive_when_photos_fail() {
+    let server = MockServer::start(PASSWORD).await;
+    server.add_chat(&dm(demo::ALEX), None, &[demo::ALEX]);
+    server.add_contact("Alex Kim", &[], &[demo::ALEX]);
+    server.set_contact_photo("Alex Kim", &demo::portrait([1, 2, 3], [4, 5, 6]));
+    server.fail_avatars(true);
+    let (_engine, _events, store) = synced(&server).await;
+
+    wait_until(|| store.contact_count().unwrap() == 1).await;
+    let names = Names::load(&store, Region::new("US"), [demo::ALEX]).unwrap();
+    assert_eq!(names.full(demo::ALEX), "Alex Kim");
+    wait_until(|| contact_requests(&server) == 2).await;
+    let alex = store.contacts_for(&[demo::ALEX.to_owned()]).unwrap();
+    assert!(!alex[demo::ALEX].has_avatar);
+}
+
 #[tokio::test]
 async fn live_messages_notify_once() {
     let server = MockServer::start(PASSWORD).await;

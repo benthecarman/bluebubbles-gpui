@@ -67,6 +67,8 @@ pub(crate) struct State {
     pub next_rowid: i64,
     pub attachment_data: HashMap<String, (String, Vec<u8>)>,
     pub contacts: Vec<Contact>,
+    /// Requests for contact photos fail.
+    pub fail_avatars: bool,
     pub send: SendBehaviour,
     pub requests: Vec<String>,
     pub ping_interval_ms: u64,
@@ -129,6 +131,7 @@ impl MockServer {
                 next_rowid: 1,
                 attachment_data: HashMap::new(),
                 contacts: Vec::new(),
+                fail_avatars: false,
                 send: SendBehaviour::default(),
                 requests: Vec::new(),
                 ping_interval_ms: 25_000,
@@ -231,6 +234,23 @@ impl MockServer {
             ..Default::default()
         };
         self.shared.lock().contacts.push(contact);
+    }
+
+    /// Gives the contact named `name` a photo, sent only to requests for
+    /// `extraProperties=avatar`, as the real server does.
+    pub fn set_contact_photo(&self, name: &str, image: &[u8]) {
+        let mut state = self.shared.lock();
+        if let Some(c) = state
+            .contacts
+            .iter_mut()
+            .find(|c| c.display_name.as_deref() == Some(name))
+        {
+            c.avatar = Some(base64(image));
+        }
+    }
+
+    pub fn fail_avatars(&self, fail: bool) {
+        self.shared.lock().fail_avatars = fail;
     }
 
     pub fn add_attachment_data(&self, guid: &str, mime: &str, bytes: Vec<u8>) {
@@ -469,4 +489,23 @@ pub(crate) fn slim(m: &Message, temp_guid: &str) -> Value {
     .unwrap_or_default();
     v["tempGuid"] = json!(temp_guid);
     v
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }

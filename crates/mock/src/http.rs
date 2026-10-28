@@ -665,6 +665,23 @@ async fn download(
 
 async fn contacts(State(s): State<Shared>, Query(q): Q, method: Method, uri: Uri) -> Response {
     authed!(s, q, method, uri);
-    let contacts = s.lock().contacts.clone();
+    let photos = q
+        .get("extraProperties")
+        .is_some_and(|p| p.split(',').any(|p| p.trim() == "avatar"));
+    let (mut contacts, fail) = {
+        let state = s.lock();
+        (state.contacts.clone(), state.fail_avatars)
+    };
+    if photos && fail {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Contacts timed out",
+            None,
+        );
+    }
+    for c in &mut contacts {
+        // The real server sends "" for no photo, and none unless asked.
+        c.avatar = Some(c.avatar.take().filter(|_| photos).unwrap_or_default());
+    }
     ok(serde_json::to_value(contacts).unwrap_or_default())
 }

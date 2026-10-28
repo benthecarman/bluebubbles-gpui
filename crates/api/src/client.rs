@@ -316,10 +316,22 @@ impl Client {
         query: &[(&str, String)],
         body: Option<Value>,
     ) -> Result<Envelope<T>, ApiError> {
+        self.call_within(method, path, query, body, self.timeout)
+            .await
+    }
+
+    async fn call_within<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+        timeout: Duration,
+    ) -> Result<Envelope<T>, ApiError> {
         let mut request = self
             .http
             .request(method, self.url(path, query))
-            .timeout(self.timeout);
+            .timeout(timeout);
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -651,13 +663,24 @@ impl Client {
         }
     }
 
+    /// Every contact. With `avatars`, each carries its full-size photo, so
+    /// the response can run to hundreds of megabytes and gets a transfer's
+    /// timeout.
     pub async fn contacts(&self, avatars: bool) -> Result<Vec<Contact>, ApiError> {
-        let query: Vec<(&str, String)> = if avatars {
-            vec![("extraProperties", "avatar".into())]
-        } else {
-            Vec::new()
-        };
-        self.data(Method::GET, "contact", &query, None).await
+        if !avatars {
+            return self.data(Method::GET, "contact", &[], None).await;
+        }
+        let query = [("extraProperties", "avatar".to_owned())];
+        self.call_within::<Vec<Contact>>(
+            Method::GET,
+            "contact",
+            &query,
+            None,
+            self.timeout * TRANSFER_TIMEOUT_FACTOR,
+        )
+        .await?
+        .data
+        .ok_or_else(|| ApiError::Decode("response has no data".into()))
     }
 }
 
