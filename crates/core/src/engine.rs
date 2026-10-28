@@ -671,6 +671,11 @@ impl Core {
         tapback: Tapback,
         remove: bool,
     ) {
+        // Messages can only tapback through the Private API helper.
+        if !self.private_api() {
+            tracing::warn!("tapbacks need the server's Private API");
+            return;
+        }
         let target_text = self
             .store
             .message_by_guid(&target)

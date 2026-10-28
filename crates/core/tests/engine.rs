@@ -524,3 +524,50 @@ async fn an_old_receipt_does_not_leave_a_gap_in_history() {
             .is_some_and(|m| m.date_read.is_some())
     );
 }
+
+#[tokio::test]
+async fn without_the_private_api_only_safe_requests_go_out() {
+    let server = MockServer::start(PASSWORD).await;
+    server.set_info(|i| {
+        i.private_api = Some(false);
+        i.helper_connected = Some(false);
+    });
+    server.add_chat(&dm(demo::ALEX), None, &[demo::ALEX]);
+    let target = server.receive(&dm(demo::ALEX), demo::ALEX, "hello");
+    let (engine, _events, store) = synced(&server).await;
+    wait_until(|| {
+        !engine.status().features.private_api && engine.status().features.macos.is_some()
+    })
+    .await;
+    let chat = store.chat_by_guid(&dm(demo::ALEX)).unwrap().unwrap();
+
+    engine.react(&dm(demo::ALEX), &target.guid, 0, Tapback::Love, false);
+    engine.composing(&dm(demo::ALEX), true);
+    engine.view(Some(chat.id), true);
+    engine.send_text(TextMessage {
+        chat_guid: dm(demo::ALEX),
+        text: "plain text still works".into(),
+        reply_to: Some((target.guid.clone(), 0)),
+        ..Default::default()
+    });
+    wait_until(|| server.messages().len() == 2).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Read here, but the Mac isn't told; no tapback, no typing.
+    assert!(!store.chat(chat.id).unwrap().unwrap().unread);
+    let requests = server.requests();
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.contains("/react") || r.contains("/typing") || r.ends_with("/read")),
+        "{requests:#?}"
+    );
+    assert!(
+        store
+            .associated(std::slice::from_ref(&target.guid))
+            .unwrap()
+            .is_empty()
+    );
+    // The reply was sent as a plain message.
+    assert!(server.messages()[1].thread_originator_guid.is_none());
+}
