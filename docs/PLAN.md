@@ -24,7 +24,7 @@ what is done and what is needed from the user.
   (E.164), notification decisions.
 - Integration tests: the engine against the mock server.
 
-## Phase 2: The app, text conversations
+## Phase 2: The app, text conversations (done)
 
 - Login screen (server address, password, test connection), password in
   the keyring.
@@ -37,13 +37,19 @@ what is done and what is needed from the user.
   indicators.
 - Screenshots against the mock server, light and dark.
 
+Without the server's Private API (Ben's setup), tapbacks are not sent,
+typing indicators and server-side read marks are off, and replies go
+out as plain messages. Receipts and incoming typing still show when the
+server reports them.
+
 ## Phase 3: Rich messages
 
 - Attachments: images inline (HEIC as JPEG), files, audio and video as
   file cards that open externally; paste and drag-and-drop to send.
-- Tapbacks: picker on right-click or double-click, badges on bubbles,
-  emoji tapbacks shown.
-- Replies: quoted bubble, reply from the context menu.
+- Tapbacks: badges on bubbles, emoji tapbacks shown; the picker on
+  right-click or double-click only when the server has the Private API.
+- Replies: quoted bubble always; reply from the context menu only with
+  the Private API.
 - Edits and unsends shown; edit and unsend own messages when the
   server's Private API allows.
 - Link previews from the server's rich-link payloads.
