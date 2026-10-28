@@ -229,6 +229,28 @@ impl Store {
         })
     }
 
+    /// The user read every chat here, muted and archived ones too.
+    /// Returns the chats that were unread, with their GUIDs.
+    pub fn mark_all_read_local(&self) -> Result<(Changes, Vec<(i64, String)>)> {
+        let mut conn = self.lock();
+        let tx = crate::write_transaction(&mut conn)?;
+        let unread: Vec<(i64, String)> = {
+            let mut stmt = tx.prepare("SELECT id, guid FROM chats WHERE unread = 1")?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        for (id, _) in &unread {
+            set_read(&tx, *id, true)?;
+            recompute_chat(&tx, *id)?;
+        }
+        tx.commit()?;
+        let changes = Changes {
+            chats: unread.iter().map(|(id, _)| *id).collect(),
+            ..Default::default()
+        };
+        Ok((changes, unread))
+    }
+
     /// Of `ids`, the incoming messages not yet notified and created at or
     /// after `since` (ms); all of `ids` are marked notified.
     pub fn take_notifiable(&self, ids: &[i64], since: i64) -> Result<Vec<i64>> {

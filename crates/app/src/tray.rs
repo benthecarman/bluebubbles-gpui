@@ -1,7 +1,7 @@
 //! The icon in the top bar (a StatusNotifierItem, which Ubuntu's GNOME,
-//! KDE and most other desktops show): Open, Settings and Quit, and a red
-//! dot while conversations are unread. Plain GNOME shows it with the
-//! AppIndicator extension.
+//! KDE and most other desktops show): Open, Settings and Quit, Mark All
+//! as Read and a red dot while conversations are unread. Plain GNOME
+//! shows it with the AppIndicator extension.
 
 use futures::channel::mpsc::UnboundedSender;
 use image::imageops::FilterType;
@@ -14,6 +14,7 @@ const SIZES: [u32; 4] = [22, 32, 48, 64];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
     Open,
+    MarkAllRead,
     Settings,
     Quit,
     /// The desktop's tray host came or went.
@@ -94,6 +95,14 @@ impl ksni::Tray for AppTray {
                 StandardItem {
                     label,
                     enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            );
+            items.push(
+                StandardItem {
+                    label: "Mark All as Read".into(),
+                    activate: Box::new(|t: &mut Self| t.send(TrayEvent::MarkAllRead)),
                     ..Default::default()
                 }
                 .into(),

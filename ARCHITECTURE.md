@@ -110,7 +110,9 @@ The outbox is a table, so pending sends survive a restart.
 
 Tapbacks, edits, unsends, replies and effects need the server's Private
 API helper. The engine reads its availability from `/server/info` and the
-UI only offers what will work.
+UI only offers what will work. The helper also marks chats read on the
+Mac (`POST /chat/:guid/read`). Without it, chats are read in this app
+only; the Mac and other clients still show them unread.
 
 ## UI
 
@@ -131,6 +133,9 @@ clears after 60 s without an update.
   pasted or dropped onto it.
 - Images are fetched once into a disk cache and decoded off the UI
   thread. HEIC photos are requested from the server as JPEG.
+- The More (⋯) menu above the conversation list has Mark All as Read,
+  where iOS keeps Read All behind Edit. Right-clicking a conversation
+  marks it read or unread.
 
 ## Desktop integration
 
@@ -146,7 +151,8 @@ clears after 60 s without an update.
   test button that reports which notification server answered.
 - A StatusNotifierItem puts the app in the top bar (GNOME needs the
   AppIndicator extension, which Ubuntu turns on). It has Open, Settings
-  and Quit, and a red dot while conversations are unread. The dock gets
+  and Quit, and Mark All as Read and a red dot while conversations are
+  unread. The dock gets
   the unread count through the Unity LauncherEntry signal.
 - Closing the window keeps the app running in the tray unless that is
   turned off in Settings. With no tray to come back from, closing quits.

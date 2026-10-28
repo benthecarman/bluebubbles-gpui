@@ -215,6 +215,7 @@ enum Command {
     Retry(i64),
     Discard(String),
     MarkRead(i64),
+    MarkAllRead,
     MarkUnread(i64),
     Composing {
         chat_guid: String,
@@ -402,6 +403,11 @@ impl Engine {
         self.command(Command::MarkUnread(chat_id));
     }
 
+    /// Marks every chat read, on the Mac too when the Private API can.
+    pub fn mark_all_read(&self) {
+        self.command(Command::MarkAllRead);
+    }
+
     /// The composer has text (`active`) or was cleared.
     pub fn composing(&self, chat_guid: &str, active: bool) {
         self.command(Command::Composing {
@@ -566,6 +572,7 @@ impl Core {
                 }
             }
             Command::MarkRead(chat_id) => self.mark_read(chat_id),
+            Command::MarkAllRead => self.mark_all_read(),
             Command::MarkUnread(chat_id) => self.mark_unread(chat_id),
             Command::Composing { chat_guid, active } => self.composing(chat_guid, active),
             Command::LoadOlder(chat_id) => self.load_older(chat_id),
@@ -806,6 +813,35 @@ impl Core {
         self.emit(EngineEvent::ChatRead { chat_id });
         self.read_due
             .insert(chat.guid, Instant::now() + self.timings.read_debounce);
+    }
+
+    fn mark_all_read(&mut self) {
+        let Some((changes, chats)) = self.report("mark all read", self.store.mark_all_read_local())
+        else {
+            return;
+        };
+        if chats.is_empty() {
+            return;
+        }
+        self.after_apply(changes, i64::MAX);
+        for (chat_id, guid) in &chats {
+            self.read_due.remove(guid);
+            self.emit(EngineEvent::ChatRead { chat_id: *chat_id });
+        }
+        tracing::info!("marked {} chats read", chats.len());
+        // Without the Private API the server can't mark chats read on the
+        // Mac; they stay read here.
+        if self.private_api() {
+            let api = self.api.clone();
+            // One at a time: each is a round trip through Messages.
+            tokio::spawn(async move {
+                for (_, guid) in chats {
+                    if let Err(e) = api.mark_read(&guid).await {
+                        tracing::warn!("mark read {guid}: {e}");
+                    }
+                }
+            });
+        }
     }
 
     fn mark_unread(&mut self, chat_id: i64) {

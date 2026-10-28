@@ -775,3 +775,56 @@ async fn a_file_still_reaching_the_mac_is_not_downloaded_yet() {
     assert_eq!(std::fs::read(&path).unwrap(), b"whole");
     std::fs::remove_dir_all(std::path::Path::new(&path).parent().unwrap()).ok();
 }
+
+async fn two_unread_chats(private_api: bool) -> (MockServer, Engine, Store, Vec<i64>) {
+    let server = MockServer::start(PASSWORD).await;
+    if !private_api {
+        server.set_info(|i| {
+            i.private_api = Some(false);
+            i.helper_connected = Some(false);
+        });
+    }
+    for who in [demo::ALEX, demo::SAM] {
+        server.add_chat(&dm(who), None, &[who]);
+        server.receive(&dm(who), who, "hi");
+    }
+    let (engine, _events, store) = synced(&server).await;
+    wait_until(|| engine.status().features.macos.is_some()).await;
+    let ids: Vec<i64> = [demo::ALEX, demo::SAM]
+        .iter()
+        .map(|w| store.chat_by_guid(&dm(w)).unwrap().unwrap().id)
+        .collect();
+    assert_eq!(store.unread_chat_count().unwrap(), 2);
+    (server, engine, store, ids)
+}
+
+#[tokio::test]
+async fn mark_all_read_tells_the_mac_with_the_private_api() {
+    let (server, engine, store, ids) = two_unread_chats(true).await;
+    engine.mark_all_read();
+    wait_until(|| store.unread_chat_count().unwrap() == 0).await;
+    for id in ids {
+        assert!(!store.chat(id).unwrap().unwrap().unread);
+    }
+    for who in [demo::ALEX, demo::SAM] {
+        let path = format!("POST /api/v1/chat/{}/read", dm(who));
+        wait_until(|| server.requests().contains(&path)).await;
+    }
+}
+
+#[tokio::test]
+async fn mark_all_read_stays_local_without_the_private_api() {
+    let (server, engine, store, _) = two_unread_chats(false).await;
+    engine.mark_all_read();
+    wait_until(|| store.unread_chat_count().unwrap() == 0).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let requests = server.requests();
+    assert!(
+        !requests.iter().any(|r| r.ends_with("/read")),
+        "{requests:#?}"
+    );
+    // A catch-up sync doesn't bring the unread state back.
+    engine.sync_now();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(store.unread_chat_count().unwrap(), 0);
+}

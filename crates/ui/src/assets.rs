@@ -51,7 +51,7 @@ icons! {
     Document => "document",
     Photo => "photo",
     Offline => "wifi-off",
-    Gear => "gear",
+    More => "ellipsis-circle",
 }
 
 pub struct Assets;

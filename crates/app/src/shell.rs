@@ -87,6 +87,7 @@ fn start_tray(cx: &mut App) {
         while let Some(event) = events.next().await {
             cx.update(|cx| match event {
                 TrayEvent::Open => show(None, None, cx),
+                TrayEvent::MarkAllRead => mark_all_read(cx),
                 TrayEvent::Settings => show_settings(None, cx),
                 TrayEvent::Quit => cx.quit(),
                 TrayEvent::Available(shown) => {
@@ -145,6 +146,13 @@ pub fn set_session(session: Option<Entity<Session>>, cx: &mut App) {
     cx.global_mut::<Shell>().session = session;
     if signed_out {
         set_unread(0, cx);
+    }
+}
+
+/// Marks every chat read; the tray dot and dock count follow.
+pub fn mark_all_read(cx: &mut App) {
+    if let Some(session) = session(cx) {
+        session.read(cx).engine.mark_all_read();
     }
 }
 

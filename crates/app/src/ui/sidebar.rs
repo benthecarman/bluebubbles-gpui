@@ -2,17 +2,47 @@
 //! unread dot, newest first, with search.
 
 use crate::session::{Session, SessionEvent};
-use crate::shell::OpenSettings;
+use crate::shell::{self, OpenSettings};
 use crate::ui::people::{self, Photos};
 use crate::ui::time;
 use crate::ui::window_controls::{self, Side};
 use bb_core::{Connection, Names};
 use bb_store::ChatRow;
-use bb_ui::{ActiveTheme, Avatar, Icon, icon};
+use bb_ui::{ActiveTheme, Avatar, Colors, Icon, icon};
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+
+/// The More menu at the top of the list, where iOS keeps Read All
+/// behind Edit.
+fn more_menu(any_unread: bool, private_api: bool, colors: Colors) -> impl IntoElement {
+    let menu = Button::new("more")
+        .ghost()
+        .compact()
+        .tooltip("More")
+        .child(icon(Icon::More, px(18.)).text_color(colors.text_secondary))
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+            let mut menu = menu.item(
+                PopupMenuItem::new("Mark All as Read")
+                    .disabled(!any_unread)
+                    .on_click(|_, _, cx| shell::mark_all_read(cx)),
+            );
+            if !private_api {
+                // The server can't mark chats read on the Mac without it.
+                menu = menu.item(PopupMenuItem::label(
+                    "Only on this computer without the Private API",
+                ));
+            }
+            menu.separator().item(
+                PopupMenuItem::new("Settings…")
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx)),
+            )
+        });
+    // Around the popover, so its trigger sees the press first.
+    window_controls::not_title_bar(div().id("more-menu").child(menu))
+}
 
 pub enum SidebarEvent {
     Open(i64),
@@ -184,6 +214,8 @@ impl Sidebar {
             )
         };
         let id = chat.id;
+        let unread = chat.unread;
+        let session = self.session.clone();
         div()
             .id(("chat", chat.id as u64))
             .h(px(ROW))
@@ -274,6 +306,22 @@ impl Sidebar {
                 cx.emit(SidebarEvent::Open(id));
                 cx.notify();
             }))
+            .context_menu(move |menu, _, _| {
+                let session = session.clone();
+                let label = if unread {
+                    "Mark as Read"
+                } else {
+                    "Mark as Unread"
+                };
+                menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                    let engine = &session.read(cx).engine;
+                    if unread {
+                        engine.mark_read(id);
+                    } else {
+                        engine.mark_unread(id);
+                    }
+                }))
+            })
             .into_any_element()
     }
 
@@ -299,6 +347,8 @@ impl Render for Sidebar {
         let count = self.shown.len();
         let note = self.connection_note(cx);
         let syncing_first = !self.session.read(cx).status.synced && self.chats.is_empty();
+        let any_unread = self.chats.iter().any(|c| c.unread);
+        let private_api = self.session.read(cx).status.features.private_api;
         div()
             .size_full()
             .flex()
@@ -317,20 +367,7 @@ impl Render for Sidebar {
                 )
                 .children(window_controls::buttons(Side::Left, window, cx))
                 .child(div().flex_1())
-                .child(
-                    window_controls::not_title_bar(
-                        div()
-                            .id("settings")
-                            .p(px(4.))
-                            .rounded(px(5.))
-                            .hover(|s| s.bg(colors.sidebar_hover))
-                            .tooltip(|window, cx| Tooltip::new("Settings").build(window, cx))
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(OpenSettings), cx)
-                            }),
-                    )
-                    .child(icon(Icon::Gear, px(18.)).text_color(colors.text_secondary)),
-                )
+                .child(more_menu(any_unread, private_api, colors))
                 .child(
                     window_controls::not_title_bar(
                         div()
