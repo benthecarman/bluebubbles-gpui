@@ -1,0 +1,10 @@
+[package]
+name = "bb-ui"
+description = "The Messages look for GPUI: palette, type, fonts and bubble shapes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gpui-kit.workspace = true

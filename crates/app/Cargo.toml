@@ -1,0 +1,15 @@
+[package]
+name = "bluebubbles-gpui"
+description = "Native Linux client for the BlueBubbles Server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bluebubbles-gpui"
+path = "src/main.rs"
+
+[dependencies]
+bb-ui = { path = "../ui" }
+gpui-kit.workspace = true
