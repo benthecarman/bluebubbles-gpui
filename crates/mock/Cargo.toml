@@ -1,0 +1,25 @@
+[package]
+name = "bb-mock"
+description = "A fake BlueBubbles Server for tests and demos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bb-mock-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws", "multipart"] }
+bb-api = { path = "../api" }
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+bb-socket = { path = "../socket" }
+url.workspace = true
