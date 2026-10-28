@@ -13,7 +13,7 @@ what is done and what is needed from the user.
 - `bb-store`: the SQLite cache with GUID upserts and send reconciliation.
 - `bb-ui`: the Messages palette and bubble shape.
 
-## Phase 1: Engine and mock server
+## Phase 1: Engine and mock server (done)
 
 - `bb-mock`: a fake BlueBubbles Server (REST and Socket.IO) that tests
   drive: incoming messages, typing, receipts, dropped connections, send
