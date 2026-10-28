@@ -5,7 +5,7 @@
 //! the system's app for them.
 
 use crate::session::{Session, SessionEvent};
-use crate::ui::composer::Composer;
+use crate::ui::composer::{Composer, ReplyTo};
 use crate::ui::media;
 use crate::ui::people::{self, Photos};
 use crate::ui::time;
@@ -13,10 +13,11 @@ use crate::ui::transcript::{
     self, Bubble as Item_, Item, Key, Kind, Link, Media, MediaKind, Quote, Receipt, Transcript,
 };
 use crate::ui::window_controls::{self, Side};
-use bb_core::{Names, Reaction, Tapback};
+use bb_core::{Names, Reaction, Tapback, tapback};
 use bb_store::{AttachmentRow, ChatRow, MessageRow};
 use bb_ui::theme::{GROUP_GAP, GROUPED_GAP, TAIL};
 use bb_ui::{ActiveTheme, Avatar, Bubble, Face, Icon, Tail, icon};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -437,6 +438,13 @@ impl Render for Conversation {
             this: cx.entity().downgrade(),
             thumbs: self.thumbs.clone(),
             opening: self.opening.clone(),
+            chat_guid: self
+                .chat
+                .as_ref()
+                .map(|c| c.guid.clone())
+                .unwrap_or_default(),
+            private_api: self.session.read(cx).status.features.private_api,
+            composer: self.composer.as_ref().map(|c| c.downgrade()),
         });
         div()
             .id("conversation")
@@ -477,6 +485,10 @@ struct RenderCx {
     this: WeakEntity<Conversation>,
     thumbs: Rc<Thumbs>,
     opening: Rc<HashSet<String>>,
+    chat_guid: String,
+    /// Tapbacks and replies can be sent (the server has the Private API).
+    private_api: bool,
+    composer: Option<WeakEntity<Composer>>,
 }
 
 fn on_disk(a: &AttachmentRow) -> Option<PathBuf> {
@@ -558,9 +570,6 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
         .gap(px(4.))
         .when(from_me, |d| d.items_end())
         .when(!from_me, |d| d.items_start());
-    if let Some(quote) = &b.quote {
-        content = content.child(quote_view(quote, cx));
-    }
     for m in &b.media {
         content = content.child(media_view(m, rcx, cx));
     }
@@ -610,13 +619,24 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
                     .child(name),
             )
         })
-        .child(
+        // Above the bubble, outside it: the tapback badge sits on the
+        // bubble, not on the quote.
+        .when_some(b.quote.as_ref(), |d, quote| {
+            d.child(div().pb(px(4.)).child(quote_view(quote, cx)))
+        })
+        .child(with_menu(
             content
+                .id(("content", id as u64))
                 .when(pending, |d| d.opacity(0.65))
                 .when(!b.reactions.is_empty(), |d| {
-                    d.child(badge(&b.reactions, from_me, &rcx.names, cx))
+                    // Room for the badge, between the bubble and whatever
+                    // is above it.
+                    d.mt(px(BADGE_ROOM))
+                        .child(badge(&b.reactions, from_me, &rcx.names, cx))
                 }),
-        )
+            b,
+            rcx,
+        ))
         .when(
             b.row.date_edited.is_some() && b.row.date_retracted.is_none(),
             |d| {
@@ -662,15 +682,10 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
     });
 
     let session = rcx.session.clone();
-    let room = if b.reactions.is_empty() {
-        0.
-    } else {
-        BADGE_ROOM
-    };
     div()
         .id(("message", id as u64))
         .w_full()
-        .pt(px(if b.first { GROUP_GAP } else { GROUPED_GAP } + room))
+        .pt(px(if b.first { GROUP_GAP } else { GROUPED_GAP }))
         .pb(bottom)
         .flex()
         .items_end()
@@ -695,6 +710,84 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
             )
         })
         .into_any_element()
+}
+
+/// The bubble's right-click menu: Copy, and where the server has the
+/// Private API, the tapbacks and Reply. Without anything to offer, no
+/// menu.
+fn with_menu(content: Stateful<Div>, b: &Item_, rcx: &RenderCx) -> AnyElement {
+    let can_act = rcx.private_api && !b.row.is_pending() && !b.row.is_failed();
+    let text = b.text.clone();
+    if !can_act && text.is_none() {
+        return content.into_any_element();
+    }
+    let session = rcx.session.clone();
+    let composer = rcx.composer.clone();
+    let chat_guid = rcx.chat_guid.clone();
+    let guid = b.row.guid.clone();
+    let mine = tapback::mine(&b.reactions).cloned();
+    let reply = ReplyTo {
+        guid: guid.clone(),
+        part: 0,
+        sender: match &b.row.sender {
+            _ if b.row.is_from_me => "You".into(),
+            Some(s) => rcx.names.short(s),
+            None => String::new(),
+        },
+        text: rcx.names.preview(&b.row),
+    };
+    content
+        .context_menu(move |mut menu, _, _| {
+            if can_act {
+                for t in Tapback::CLASSIC {
+                    let on = mine.as_ref() == Some(&t);
+                    let (session, chat_guid, guid) =
+                        (session.clone(), chat_guid.clone(), guid.clone());
+                    let label = format!("{}  {}", glyph_text(&t), tapback_name(&t));
+                    menu = menu.item(PopupMenuItem::new(label).checked(on).on_click(
+                        move |_, _, cx| {
+                            if let Some(session) = session.upgrade() {
+                                // Choosing your own tapback again takes it off.
+                                session
+                                    .read(cx)
+                                    .engine
+                                    .react(&chat_guid, &guid, 0, t.clone(), on);
+                            }
+                        },
+                    ));
+                }
+                let (composer, reply) = (composer.clone(), reply.clone());
+                menu = menu.separator().item(PopupMenuItem::new("Reply").on_click(
+                    move |_, window, cx| {
+                        if let Some(composer) = composer.as_ref().and_then(|c| c.upgrade()) {
+                            Composer::reply(&composer, reply.clone(), window, cx);
+                        }
+                    },
+                ));
+            }
+            if let Some(text) = text.clone() {
+                if can_act {
+                    menu = menu.separator();
+                }
+                menu = menu.item(PopupMenuItem::new("Copy").on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                }));
+            }
+            menu
+        })
+        .into_any_element()
+}
+
+fn tapback_name(t: &Tapback) -> String {
+    match t {
+        Tapback::Love => "Love".into(),
+        Tapback::Like => "Like".into(),
+        Tapback::Dislike => "Dislike".into(),
+        Tapback::Laugh => "Laugh".into(),
+        Tapback::Emphasize => "Emphasize".into(),
+        Tapback::Question => "Question".into(),
+        Tapback::Emoji(e) => e.clone(),
+    }
 }
 
 fn media_view(m: &Media, rcx: &RenderCx, cx: &App) -> AnyElement {

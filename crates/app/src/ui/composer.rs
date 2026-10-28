@@ -19,6 +19,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The message being replied to, shown above the field.
+#[derive(Clone)]
+pub struct ReplyTo {
+    pub guid: String,
+    pub part: i64,
+    /// "Alex", "You".
+    pub sender: String,
+    pub text: String,
+}
+
 /// A file waiting to be sent with the message.
 struct Staged {
     path: PathBuf,
@@ -37,6 +47,7 @@ pub struct Composer {
     save_draft: Option<Task<()>>,
     error: Option<SharedString>,
     staged: Vec<Staged>,
+    reply_to: Option<ReplyTo>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -95,6 +106,7 @@ impl Composer {
             save_draft: None,
             error: None,
             staged: Vec::new(),
+            reply_to: None,
             _subscriptions: subscriptions,
         }
     }
@@ -148,6 +160,16 @@ impl Composer {
             })
             .await;
         }));
+    }
+
+    /// Makes the next message a reply (sent as one only where the server
+    /// has the Private API).
+    pub fn reply(this: &Entity<Self>, reply: ReplyTo, window: &mut Window, cx: &mut App) {
+        this.update(cx, |this, cx| {
+            this.reply_to = Some(reply);
+            cx.notify();
+        });
+        Self::focus(this, window, cx);
     }
 
     /// Adds files to send with the message.
@@ -217,13 +239,15 @@ impl Composer {
             return;
         }
         let engine = self.session.read(cx).engine.clone();
+        let mut reply_to = self.reply_to.take().map(|r| (r.guid, r.part));
         for staged in std::mem::take(&mut self.staged) {
-            engine.send_file(&self.chat_guid, staged.path, None);
+            engine.send_file(&self.chat_guid, staged.path, reply_to.take());
         }
         if !text.trim().is_empty() {
             engine.send_text(TextMessage {
                 chat_guid: self.chat_guid.clone(),
                 text,
+                reply_to,
                 ..Default::default()
             });
         }
@@ -339,6 +363,37 @@ impl Render for Composer {
             .flex()
             .flex_col()
             .gap(px(4.))
+            .when_some(self.reply_to.clone(), |el, reply| {
+                el.child(
+                    div()
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .text_size(m.small())
+                        .text_color(colors.text_secondary)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(format!("Replying to {}: {}", reply.sender, reply.text)),
+                        )
+                        .child(
+                            div()
+                                .id("cancel-reply")
+                                .cursor_pointer()
+                                .child(
+                                    icon(Icon::WindowClose, px(14.))
+                                        .text_color(colors.text_secondary),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.reply_to = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .when_some(self.error.clone(), |el, error| {
                 el.child(
                     div()
