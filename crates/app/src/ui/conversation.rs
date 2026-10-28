@@ -1,18 +1,29 @@
 //! One conversation: the header, the transcript and the composer.
+//!
+//! Photos download as they come into the transcript and are drawn from
+//! small decoded copies; other files download when clicked and open in
+//! the system's app for them.
 
 use crate::session::{Session, SessionEvent};
 use crate::ui::composer::Composer;
+use crate::ui::media;
 use crate::ui::people::{self, Photos};
 use crate::ui::time;
-use crate::ui::transcript::{self, Bubble as Item_, Item, Key, Kind, Receipt, Transcript};
+use crate::ui::transcript::{
+    self, Bubble as Item_, Item, Key, Kind, Link, Media, MediaKind, Quote, Receipt, Transcript,
+};
 use crate::ui::window_controls::{self, Side};
-use bb_core::Names;
-use bb_store::{ChatRow, MessageRow};
+use bb_core::{Names, Reaction, Tapback};
+use bb_store::{AttachmentRow, ChatRow, MessageRow};
 use bb_ui::theme::{GROUP_GAP, GROUPED_GAP, TAIL};
 use bb_ui::{ActiveTheme, Avatar, Bubble, Face, Icon, Tail, icon};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Messages read from the cache at a time.
@@ -20,6 +31,14 @@ const PAGE: usize = 60;
 /// Load older messages when the top is this close.
 const LOAD_WITHIN: usize = 6;
 const SMALL_AVATAR: f32 = 28.;
+/// Photos up to this size download as soon as they're in the transcript.
+const AUTO_DOWNLOAD_MAX: i64 = 40_000_000;
+/// Room above a bubble for its tapback badge.
+const BADGE_ROOM: f32 = 16.;
+
+/// Decoded photos by attachment GUID; `None` when the file isn't an
+/// image we can decode (it shows as a file instead).
+type Thumbs = HashMap<String, Option<Arc<RenderImage>>>;
 
 pub struct Conversation {
     session: Entity<Session>,
@@ -38,6 +57,14 @@ pub struct Conversation {
     /// Read the cache again on the next render (from places without a
     /// window).
     pending_reload: bool,
+    associated: HashMap<String, Vec<MessageRow>>,
+    originals: HashMap<String, MessageRow>,
+    thumbs: Rc<Thumbs>,
+    decoding: HashSet<String>,
+    /// Downloads asked of the engine, so each is asked once.
+    requested: HashSet<String>,
+    /// Files clicked before they were downloaded; they open on arrival.
+    opening: Rc<HashSet<String>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -90,6 +117,12 @@ impl Conversation {
             reload_again: false,
             wants_older: false,
             pending_reload: false,
+            associated: HashMap::new(),
+            originals: HashMap::new(),
+            thumbs: Rc::default(),
+            decoding: HashSet::new(),
+            requested: HashSet::new(),
+            opening: Rc::default(),
             _subscriptions: subscriptions,
         };
         this.reload(window, cx);
@@ -117,20 +150,44 @@ impl Conversation {
         let task = cx.background_spawn(async move {
             let chat = store.chat(chat_id)?;
             let rows = store.messages_before(chat_id, None, limit as u32)?;
+            let guids: Vec<String> = rows.iter().map(|m| m.guid.clone()).collect();
+            let mut associated: HashMap<String, Vec<MessageRow>> = HashMap::new();
+            for a in store.associated(&guids)? {
+                if let Some(on) = a.associated_guid.clone() {
+                    associated.entry(on).or_default().push(a);
+                }
+            }
+            let mut originals = HashMap::new();
+            for guid in rows
+                .iter()
+                .filter_map(|m| m.thread_originator_guid.as_ref())
+            {
+                if originals.contains_key(guid) {
+                    continue;
+                }
+                let found = match rows.iter().find(|r| &r.guid == guid) {
+                    Some(r) => Some(r.clone()),
+                    None => store.message_by_guid(guid)?,
+                };
+                if let Some(original) = found {
+                    originals.insert(guid.clone(), original);
+                }
+            }
             let mut addresses: Vec<String> =
                 chat.iter().flat_map(|c| c.participants.clone()).collect();
             addresses.extend(rows.iter().filter_map(|m| m.sender.clone()));
             addresses.extend(rows.iter().filter_map(|m| m.other_address.clone()));
+            addresses.extend(originals.values().filter_map(|m| m.sender.clone()));
             let names = Names::load(&store, region, addresses.iter().map(String::as_str))?;
             let photos = photos.load_more(&store, &names, addresses.iter().map(String::as_str));
-            Ok::<_, bb_store::StoreError>((chat, rows, names, photos))
+            Ok::<_, bb_store::StoreError>((chat, rows, associated, originals, names, photos))
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.reloading = false;
                 match result {
-                    Ok((chat, rows, names, photos)) => {
+                    Ok((chat, rows, associated, originals, names, photos)) => {
                         if this.composer.is_none()
                             && let Some(chat) = &chat
                         {
@@ -141,6 +198,8 @@ impl Conversation {
                         }
                         this.chat = chat;
                         this.rows = rows;
+                        this.associated = associated;
+                        this.originals = originals;
                         this.names = names;
                         this.photos = photos;
                         this.rebuild(cx);
@@ -172,11 +231,90 @@ impl Conversation {
                 now,
                 to_local: &to_local,
                 typing,
+                associated: &self.associated,
+                originals: &self.originals,
             },
         );
         self.splice(&next.keys);
         self.transcript = Rc::new(next);
         self.wants_older = false;
+        self.fetch_media(cx);
+        cx.notify();
+    }
+
+    /// Downloads the photos in the transcript, decodes the ones on disk,
+    /// and opens files that were clicked before they arrived.
+    fn fetch_media(&mut self, cx: &mut Context<Self>) {
+        let engine = self.session.read(cx).engine.clone();
+        let transcript = self.transcript.clone();
+        for item in &transcript.items {
+            let Item::Bubble(b) = item else {
+                continue;
+            };
+            let photos = b
+                .media
+                .iter()
+                .filter(|m| m.kind == MediaKind::Image)
+                .map(|m| &m.attachment)
+                .chain(b.link.as_ref().and_then(|l| l.image.as_ref()));
+            for a in photos {
+                match on_disk(a) {
+                    Some(path) => {
+                        if !self.thumbs.contains_key(&a.guid)
+                            && self.decoding.insert(a.guid.clone())
+                        {
+                            self.decode(a.guid.clone(), path, cx);
+                        }
+                    }
+                    None => {
+                        if a.total_bytes.unwrap_or(0) <= AUTO_DOWNLOAD_MAX
+                            && self.requested.insert(a.guid.clone())
+                        {
+                            engine.download(&a.guid);
+                        }
+                    }
+                }
+            }
+            for m in &b.media {
+                if let Some(path) = on_disk(&m.attachment)
+                    && self.opening.contains(&m.attachment.guid)
+                {
+                    Rc::make_mut(&mut self.opening).remove(&m.attachment.guid);
+                    cx.open_with_system(&path);
+                }
+            }
+        }
+    }
+
+    fn decode(&mut self, guid: String, path: PathBuf, cx: &mut Context<Self>) {
+        let task = cx.background_spawn(async move { media::thumbnail(&path) });
+        cx.spawn(async move |this, cx| {
+            let thumb = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.decoding.remove(&guid);
+                Rc::make_mut(&mut this.thumbs).insert(guid.clone(), thumb);
+                // The photo's own aspect may differ from the reserved size.
+                if let Some(ix) = this.transcript.items.iter().position(|item| {
+                    matches!(item, Item::Bubble(b) if b.media.iter().any(|m| m.attachment.guid == guid)
+                        || b.link.as_ref().and_then(|l| l.image.as_ref()).is_some_and(|a| a.guid == guid))
+                }) {
+                    this.list.remeasure_items(ix..ix + 1);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Opens a file in the system's app for it, downloading it first.
+    fn open_attachment(&mut self, a: &AttachmentRow, cx: &mut Context<Self>) {
+        if let Some(path) = on_disk(a) {
+            cx.open_with_system(&path);
+            return;
+        }
+        Rc::make_mut(&mut self.opening).insert(a.guid.clone());
+        self.requested.insert(a.guid.clone());
+        self.session.read(cx).engine.download(&a.guid);
         cx.notify();
     }
 
@@ -292,9 +430,14 @@ impl Render for Conversation {
         }
         let colors = *cx.colors();
         let transcript = self.transcript.clone();
-        let names = self.names.clone();
-        let photos = self.photos.clone();
-        let session = self.session.downgrade();
+        let rcx = Rc::new(RenderCx {
+            names: self.names.clone(),
+            photos: self.photos.clone(),
+            session: self.session.downgrade(),
+            this: cx.entity().downgrade(),
+            thumbs: self.thumbs.clone(),
+            opening: self.opening.clone(),
+        });
         div()
             .size_full()
             .flex()
@@ -307,7 +450,7 @@ impl Render for Conversation {
                         return div().into_any_element();
                     };
                     let last = ix + 1 == transcript.items.len();
-                    render_item(item, &names, &photos, &session, last, window, cx)
+                    render_item(item, &rcx, last, window, cx)
                 })
                 .flex_1()
                 .px(px(14.)),
@@ -316,11 +459,26 @@ impl Render for Conversation {
     }
 }
 
+/// What drawing a transcript row needs from the conversation.
+struct RenderCx {
+    names: Names,
+    photos: Photos,
+    session: WeakEntity<Session>,
+    this: WeakEntity<Conversation>,
+    thumbs: Rc<Thumbs>,
+    opening: Rc<HashSet<String>>,
+}
+
+fn on_disk(a: &AttachmentRow) -> Option<PathBuf> {
+    a.local_path
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+}
+
 fn render_item(
     item: &Item,
-    names: &Names,
-    photos: &Photos,
-    session: &WeakEntity<Session>,
+    rcx: &RenderCx,
     last: bool,
     _: &mut Window,
     cx: &mut App,
@@ -361,18 +519,11 @@ fn render_item(
             .when(*avatar_slot, |d| d.child(div().w(px(SMALL_AVATAR + 6.))))
             .child(typing_bubble(cx))
             .into_any_element(),
-        Item::Bubble(b) => bubble(b, names, photos, session, bottom, cx),
+        Item::Bubble(b) => bubble(b, rcx, bottom, cx),
     }
 }
 
-fn bubble(
-    b: &Item_,
-    names: &Names,
-    photos: &Photos,
-    session: &WeakEntity<Session>,
-    bottom: Pixels,
-    cx: &mut App,
-) -> AnyElement {
+fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement {
     let colors = *cx.colors();
     let m = cx.theme().metrics();
     let from_me = b.row.is_from_me;
@@ -390,9 +541,21 @@ fn bubble(
     let failed = matches!(b.receipt, Some(Receipt::Failed));
     let id = b.row.id;
 
-    let mut content = div().flex().flex_col().gap(px(4.));
-    for a in b.row.attachments.iter().filter(|a| !a.hidden) {
-        content = content.child(attachment_card(a, fill, fg, cx));
+    let mut content = div()
+        .relative()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .when(from_me, |d| d.items_end())
+        .when(!from_me, |d| d.items_start());
+    if let Some(quote) = &b.quote {
+        content = content.child(quote_view(quote, cx));
+    }
+    for m in &b.media {
+        content = content.child(media_view(m, rcx, cx));
+    }
+    if let Some(link) = &b.link {
+        content = content.child(link_card(link, rcx, cx));
     }
     if let Some(text) = &b.text {
         if b.jumbo {
@@ -437,7 +600,13 @@ fn bubble(
                     .child(name),
             )
         })
-        .child(content.when(pending, |d| d.opacity(0.65)))
+        .child(
+            content
+                .when(pending, |d| d.opacity(0.65))
+                .when(!b.reactions.is_empty(), |d| {
+                    d.child(badge(&b.reactions, from_me, &rcx.names, cx))
+                }),
+        )
         .when(
             b.row.date_edited.is_some() && b.row.date_retracted.is_none(),
             |d| {
@@ -472,7 +641,7 @@ fn bubble(
 
     let avatar = b.avatar_slot.then(|| {
         let face = match (&b.row.sender, b.tail) {
-            (Some(sender), true) => Some(people::face(names, photos, sender)),
+            (Some(sender), true) => Some(people::face(&rcx.names, &rcx.photos, sender)),
             _ => None,
         };
         div()
@@ -482,11 +651,16 @@ fn bubble(
             .when_some(face, |d, face| d.child(Avatar::new(face, px(SMALL_AVATAR))))
     });
 
-    let session = session.clone();
+    let session = rcx.session.clone();
+    let room = if b.reactions.is_empty() {
+        0.
+    } else {
+        BADGE_ROOM
+    };
     div()
         .id(("message", id as u64))
         .w_full()
-        .pt(px(if b.first { GROUP_GAP } else { GROUPED_GAP }))
+        .pt(px(if b.first { GROUP_GAP } else { GROUPED_GAP } + room))
         .pb(bottom)
         .flex()
         .items_end()
@@ -513,36 +687,334 @@ fn bubble(
         .into_any_element()
 }
 
-/// Until Phase 3 draws them, attachments show as a labelled card.
-fn attachment_card(a: &bb_store::AttachmentRow, fill: Hsla, fg: Hsla, cx: &App) -> AnyElement {
-    let m = cx.theme().metrics();
-    let mime = a.mime_type.as_deref().unwrap_or_default();
-    let label = if mime.starts_with("image/") {
-        "Photo"
-    } else if mime.starts_with("video/") {
-        "Video"
-    } else if mime.starts_with("audio/") {
-        "Audio"
-    } else {
-        "File"
+fn media_view(m: &Media, rcx: &RenderCx, cx: &App) -> AnyElement {
+    let a = &m.attachment;
+    let thumb = rcx.thumbs.get(&a.guid);
+    if m.kind == MediaKind::Image && !matches!(thumb, Some(None)) {
+        return photo(a, thumb.cloned().flatten(), rcx, cx);
+    }
+    file_card(m, rcx, cx)
+}
+
+/// A photo at its own aspect ratio, or a grey box of that size while it
+/// downloads. Clicking opens the full file.
+fn photo(
+    a: &AttachmentRow,
+    thumb: Option<Arc<RenderImage>>,
+    rcx: &RenderCx,
+    cx: &App,
+) -> AnyElement {
+    let colors = *cx.colors();
+    let radius = cx.theme().metrics().bubble_radius();
+    let (w, h) = match &thumb {
+        Some(t) => {
+            let size = t.size(0);
+            media::display_size(Some(size.width.0 as i64), Some(size.height.0 as i64))
+        }
+        None => media::display_size(a.width, a.height),
     };
-    let name = a.transfer_name.clone().unwrap_or_default();
+    let this = rcx.this.clone();
+    let attachment = a.clone();
     div()
-        .rounded(m.bubble_radius())
-        .bg(fill)
-        .text_color(fg)
-        .px(m.bubble_pad_x())
+        .id(SharedString::from(format!("photo-{}", a.guid)))
+        .w(px(w))
+        .h(px(h))
+        .rounded(radius)
+        .bg(colors.received)
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .map(|d| match thumb {
+            Some(t) => d.child(
+                img(t)
+                    .w(px(w))
+                    .h(px(h))
+                    .rounded(radius)
+                    .object_fit(ObjectFit::Cover),
+            ),
+            None => d.child(icon(Icon::Photo, px(28.)).text_color(colors.text_tertiary)),
+        })
+        .on_click(move |_, _, cx| {
+            let _ = this.update(cx, |this, cx| this.open_attachment(&attachment, cx));
+        })
+        .into_any_element()
+}
+
+/// Videos, audio and other files: a card that downloads the file when
+/// clicked and opens it in the system's app (no player runs in here).
+fn file_card(m: &Media, rcx: &RenderCx, cx: &App) -> AnyElement {
+    let colors = *cx.colors();
+    let metrics = cx.theme().metrics();
+    let a = &m.attachment;
+    let (glyph, title) = match m.kind {
+        MediaKind::Video => (Icon::Play, "Video".to_owned()),
+        MediaKind::Audio => (Icon::Waveform, "Audio Message".to_owned()),
+        MediaKind::Image => (Icon::Photo, "Photo".to_owned()),
+        MediaKind::File => (
+            Icon::Document,
+            a.transfer_name.clone().unwrap_or_else(|| "File".into()),
+        ),
+    };
+    let detail = if rcx.opening.contains(&a.guid) {
+        "Downloading…".to_owned()
+    } else {
+        let size = a.total_bytes.filter(|b| *b > 0).map(media::file_size);
+        let name = (m.kind != MediaKind::File)
+            .then(|| a.transfer_name.clone())
+            .flatten();
+        [name, size]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    let this = rcx.this.clone();
+    let attachment = a.clone();
+    div()
+        .id(SharedString::from(format!("file-{}", a.guid)))
+        .w(px(240.))
+        .px(px(12.))
         .py(px(10.))
+        .rounded(metrics.bubble_radius())
+        .bg(colors.received)
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .child(
+            div()
+                .size(px(32.))
+                .flex_none()
+                .rounded_full()
+                .bg(colors.window)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(glyph, px(16.)).text_color(colors.accent)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(metrics.message_text())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(colors.on_received)
+                        .child(title),
+                )
+                .when(!detail.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .truncate()
+                            .text_size(metrics.caption())
+                            .text_color(colors.text_secondary)
+                            .child(detail),
+                    )
+                }),
+        )
+        .on_click(move |_, _, cx| {
+            let _ = this.update(cx, |this, cx| this.open_attachment(&attachment, cx));
+        })
+        .into_any_element()
+}
+
+/// A link preview: the sender's picture of the page, then its title and
+/// site. Nothing is fetched from the site itself.
+fn link_card(link: &Link, rcx: &RenderCx, cx: &App) -> AnyElement {
+    let colors = *cx.colors();
+    let metrics = cx.theme().metrics();
+    let radius = metrics.bubble_radius();
+    let width = media::MAX_W;
+    let thumb = link
+        .image
+        .as_ref()
+        .and_then(|a| rcx.thumbs.get(&a.guid).cloned().flatten());
+    let title = match (&link.title, link.loading) {
+        (Some(t), _) => t.clone(),
+        (None, true) => "Loading preview…".into(),
+        (None, false) => link.host.clone(),
+    };
+    let has_image = thumb.is_some();
+    let url = link.url.clone();
+    div()
+        .id(SharedString::from(format!("link-{}", link.url)))
+        .w(px(width))
+        .flex()
+        .flex_col()
+        .cursor_pointer()
+        .when_some(thumb, |d, t| {
+            let size = t.size(0);
+            let aspect = size.height.0 as f32 / size.width.0.max(1) as f32;
+            let h = (width * aspect).clamp(80., 200.);
+            d.child(
+                img(t)
+                    .w(px(width))
+                    .h(px(h))
+                    .rounded_t(radius)
+                    .object_fit(ObjectFit::Cover),
+            )
+        })
+        .child(
+            div()
+                .w_full()
+                .px(px(12.))
+                .py(px(9.))
+                .bg(colors.received)
+                .rounded_b(radius)
+                .when(!has_image, |d| d.rounded_t(radius))
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(
+                    div()
+                        .text_size(metrics.message_text())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.on_received)
+                        .line_clamp(2)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(metrics.caption())
+                        .text_color(colors.text_secondary)
+                        .truncate()
+                        .child(link.host.clone()),
+                ),
+        )
+        .on_click(move |_, _, cx| cx.open_url(&url))
+        .into_any_element()
+}
+
+/// The message replied to, small and faded above the reply.
+fn quote_view(quote: &Quote, cx: &App) -> AnyElement {
+    let colors = *cx.colors();
+    let metrics = cx.theme().metrics();
+    div()
+        .max_w(px(media::MAX_W))
+        .px(px(10.))
+        .py(px(5.))
+        .rounded(px(14.))
+        .border_1()
+        .border_color(colors.separator)
         .flex()
         .flex_col()
         .child(
             div()
-                .text_size(m.message_text())
-                .font_weight(FontWeight::MEDIUM)
-                .child(label),
+                .text_size(metrics.caption())
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.text_secondary)
+                .child(quote.sender.clone()),
         )
-        .child(div().text_size(m.caption()).opacity(0.75).child(name))
+        .child(
+            div()
+                .text_size(metrics.small())
+                .text_color(colors.text_secondary)
+                .line_clamp(2)
+                .child(quote.text.clone()),
+        )
         .into_any_element()
+}
+
+/// The tapbacks on a message, as Messages draws them: a small bubble on
+/// the bubble's top corner, blue when one of them is yours. Hovering
+/// lists who reacted.
+fn badge(reactions: &[Reaction], from_me: bool, names: &Names, cx: &App) -> AnyElement {
+    let colors = *cx.colors();
+    let mine = reactions.iter().any(|r| r.from_me);
+    let (bg, fg) = if mine {
+        (colors.imessage, colors.on_bubble)
+    } else {
+        (colors.received, colors.text_secondary)
+    };
+    // Newest first, each kind once, at most three.
+    let mut kinds: Vec<&Tapback> = Vec::new();
+    for r in reactions.iter().rev() {
+        if !kinds.contains(&&r.tapback) && kinds.len() < 3 {
+            kinds.push(&r.tapback);
+        }
+    }
+    let who = reactions
+        .iter()
+        .map(|r| {
+            let name = match &r.sender {
+                _ if r.from_me => "You".to_owned(),
+                Some(s) => names.short(s),
+                None => String::new(),
+            };
+            format!("{} {name}", glyph_text(&r.tapback))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let count = reactions.len();
+    div()
+        .id("tapbacks")
+        .absolute()
+        .top(px(-BADGE_ROOM - 4.))
+        .when(from_me, |d| d.left(px(-12.)))
+        .when(!from_me, |d| d.right(px(-12.)))
+        .h(px(30.))
+        .min_w(px(30.))
+        .px(px(7.))
+        .rounded_full()
+        .bg(bg)
+        .border_2()
+        .border_color(colors.window)
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(3.))
+        .children(kinds.into_iter().map(|t| tapback_glyph(t, fg)))
+        .when(count > 3, |d| {
+            d.child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(fg)
+                    .child(count.to_string()),
+            )
+        })
+        .tooltip(move |window, cx| Tooltip::new(who.clone()).build(window, cx))
+        .into_any_element()
+}
+
+fn glyph_text(t: &Tapback) -> String {
+    match t {
+        Tapback::Love => "❤️".into(),
+        Tapback::Like => "👍".into(),
+        Tapback::Dislike => "👎".into(),
+        Tapback::Laugh => "😂".into(),
+        Tapback::Emphasize => "‼️".into(),
+        Tapback::Question => "❓".into(),
+        Tapback::Emoji(e) => e.clone(),
+    }
+}
+
+fn tapback_glyph(t: &Tapback, fg: Hsla) -> AnyElement {
+    let text = |s: &'static str, size: f32| {
+        div()
+            .text_size(px(size))
+            .font_weight(FontWeight::BOLD)
+            .text_color(fg)
+            .child(s)
+            .into_any_element()
+    };
+    match t {
+        Tapback::Love => icon(Icon::Heart, px(15.)).text_color(fg).into_any_element(),
+        Tapback::Like => icon(Icon::ThumbsUp, px(15.))
+            .text_color(fg)
+            .into_any_element(),
+        Tapback::Dislike => icon(Icon::ThumbsDown, px(15.))
+            .text_color(fg)
+            .into_any_element(),
+        Tapback::Laugh => text("HA HA", 9.),
+        Tapback::Emphasize => text("!!", 14.),
+        Tapback::Question => text("?", 15.),
+        Tapback::Emoji(e) => div().text_size(px(15.)).child(e.clone()).into_any_element(),
+    }
 }
 
 /// The received bubble with three pulsing dots.

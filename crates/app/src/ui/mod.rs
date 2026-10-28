@@ -2,6 +2,7 @@ pub mod composer;
 pub mod conversation;
 pub mod login;
 pub mod main_view;
+pub mod media;
 pub mod people;
 pub mod sidebar;
 pub mod time;

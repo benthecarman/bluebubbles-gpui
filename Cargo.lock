@@ -873,6 +873,7 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "gpui-kit",
+ "image",
  "oo7",
  "serde",
  "serde_json",

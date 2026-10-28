@@ -43,6 +43,13 @@ icons! {
     WindowMaximize => "window-maximize",
     WindowRestore => "window-restore",
     ChevronDown => "chevron-down",
+    Heart => "heart",
+    ThumbsUp => "thumbs-up",
+    ThumbsDown => "thumbs-down",
+    Play => "play",
+    Waveform => "waveform",
+    Document => "document",
+    Photo => "photo",
     Offline => "wifi-off",
 }
 

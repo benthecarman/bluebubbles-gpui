@@ -1,13 +1,16 @@
 //! Turns a chat's messages into what the transcript draws: timestamp
 //! separators, group events, bubble runs with tails, sender names in
-//! groups, and the receipt under your latest message.
+//! groups, the receipt under your latest message, and each bubble's
+//! photos and files, link preview, tapbacks and quoted reply.
 //!
 //! Pure data, so the layout rules are unit tested without a window.
 
 use super::time;
-use bb_core::Names;
-use bb_store::MessageRow;
+use bb_core::rich_link::{self, URL_BALLOON};
+use bb_core::{Names, Reaction, tapback};
+use bb_store::{AttachmentRow, MessageRow};
 use chrono::{DateTime, TimeZone};
+use std::collections::HashMap;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// A gap this long starts a new timestamp separator.
@@ -58,6 +61,46 @@ pub struct Bubble {
     /// Only emoji, few enough to draw large without a bubble.
     pub jumbo: bool,
     pub receipt: Option<Receipt>,
+    /// Photos, videos, audio and files, in order.
+    pub media: Vec<Media>,
+    pub link: Option<Link>,
+    /// Standing tapbacks, oldest first.
+    pub reactions: Vec<Reaction>,
+    /// The message this one replies to.
+    pub quote: Option<Quote>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Image,
+    Video,
+    Audio,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Media {
+    pub kind: MediaKind,
+    pub attachment: AttachmentRow,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Link {
+    pub url: String,
+    pub title: Option<String>,
+    /// "example.com".
+    pub host: String,
+    /// The preview image the sender's device attached.
+    pub image: Option<AttachmentRow>,
+    /// The sender's device is still fetching the page.
+    pub loading: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Quote {
+    /// "You", or the sender's short name.
+    pub sender: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,6 +184,98 @@ pub struct Context<'a, Tz: TimeZone> {
     pub now: DateTime<Tz>,
     pub to_local: &'a dyn Fn(i64) -> DateTime<Tz>,
     pub typing: bool,
+    /// Tapbacks and stickers, by the GUID of the message they're on.
+    pub associated: &'a HashMap<String, Vec<MessageRow>>,
+    /// Messages replied to, by GUID (they may be outside the page).
+    pub originals: &'a HashMap<String, MessageRow>,
+}
+
+/// What an attachment is, from its MIME type, else its UTI or name.
+pub fn media_kind(a: &AttachmentRow) -> MediaKind {
+    let mime = a.mime_type.as_deref().unwrap_or_default();
+    let uti = a.uti.as_deref().unwrap_or_default();
+    let ext = a
+        .transfer_name
+        .as_deref()
+        .and_then(|n| n.rsplit_once('.'))
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if mime.starts_with("image/")
+        || matches!(
+            uti,
+            "public.jpeg" | "public.png" | "public.heic" | "com.compuserve.gif"
+        )
+        || matches!(
+            ext.as_str(),
+            "jpg" | "jpeg" | "png" | "heic" | "heif" | "gif" | "webp" | "tif" | "tiff"
+        )
+    {
+        MediaKind::Image
+    } else if mime.starts_with("video/")
+        || matches!(uti, "com.apple.quicktime-movie" | "public.mpeg-4")
+        || matches!(ext.as_str(), "mov" | "mp4" | "m4v")
+    {
+        MediaKind::Video
+    } else if mime.starts_with("audio/")
+        || uti == "com.apple.coreaudio-format"
+        || matches!(ext.as_str(), "caf" | "mp3" | "m4a" | "wav" | "aac" | "amr")
+    {
+        MediaKind::Audio
+    } else {
+        MediaKind::File
+    }
+}
+
+/// Data a Messages extension (a link preview, an app) sent along; not
+/// something to show as a file.
+fn is_plugin_payload(a: &AttachmentRow) -> bool {
+    a.transfer_name
+        .as_deref()
+        .is_some_and(|n| n.contains("pluginPayloadAttachment"))
+}
+
+fn looks_like_url(text: &str) -> bool {
+    let t = text.trim();
+    !t.contains(char::is_whitespace)
+        && (t.starts_with("http://") || t.starts_with("https://") || t.contains('.'))
+}
+
+fn link(m: &MessageRow, text: Option<&str>) -> Option<Link> {
+    if m.balloon_bundle_id.as_deref() != Some(URL_BALLOON) {
+        return None;
+    }
+    let rich = m.payload_data.as_ref().and_then(rich_link::parse);
+    let url = rich
+        .as_ref()
+        .and_then(|r| r.url.clone())
+        .or_else(|| text.filter(|t| looks_like_url(t)).map(str::to_owned))?;
+    let image = m
+        .attachments
+        .iter()
+        .filter(|a| is_plugin_payload(a))
+        .max_by_key(|a| a.total_bytes.unwrap_or(0))
+        .cloned();
+    let host = rich_link::display_host(&url);
+    Some(Link {
+        title: rich.as_ref().and_then(|r| r.title.clone()),
+        loading: rich.as_ref().is_some_and(|r| r.placeholder),
+        image,
+        host,
+        url,
+    })
+}
+
+fn reactions_on(m: &MessageRow, associated: &HashMap<String, Vec<MessageRow>>) -> Vec<Reaction> {
+    let Some(on) = associated.get(&m.guid) else {
+        return Vec::new();
+    };
+    let mut parts: Vec<i64> = on.iter().map(|a| a.associated_part.unwrap_or(0)).collect();
+    parts.sort_unstable();
+    parts.dedup();
+    parts
+        .into_iter()
+        .flat_map(|part| tapback::reactions(on, part))
+        .collect()
 }
 
 pub fn build<Tz: TimeZone>(rows: &[MessageRow], cx: &Context<'_, Tz>) -> Transcript
@@ -182,8 +317,34 @@ where
         let next_continues = next.is_some_and(|n| {
             !is_event(n) && same_sender(m, n) && n.date_created - m.date_created <= RUN_GAP
         });
-        let text = visible_text(m);
-        let jumbo = text.as_deref().is_some_and(jumbo) && m.attachments.is_empty();
+        let mut text = visible_text(m);
+        let link = link(m, text.as_deref());
+        // The card shows the link; a bare URL needs no bubble as well.
+        if link.is_some() && text.as_deref().is_some_and(looks_like_url) {
+            text = None;
+        }
+        let media: Vec<Media> = m
+            .attachments
+            .iter()
+            .filter(|a| !a.hidden && !is_plugin_payload(a))
+            .map(|a| Media {
+                kind: media_kind(a),
+                attachment: a.clone(),
+            })
+            .collect();
+        let jumbo = text.as_deref().is_some_and(jumbo) && media.is_empty();
+        let quote = m
+            .thread_originator_guid
+            .as_ref()
+            .and_then(|g| cx.originals.get(g))
+            .map(|o| Quote {
+                sender: match &o.sender {
+                    _ if o.is_from_me => "You".into(),
+                    Some(s) => cx.names.short(s),
+                    None => String::new(),
+                },
+                text: cx.names.preview(o),
+            });
         let receipt = if m.is_from_me && m.is_failed() {
             Some(Receipt::Failed)
         } else if Some(m.id) == receipt_owner && !m.is_pending() {
@@ -206,6 +367,10 @@ where
             text,
             jumbo,
             receipt,
+            media,
+            link,
+            reactions: reactions_on(m, cx.associated),
+            quote,
             row: m.clone(),
         })));
         prev = Some(m);
@@ -266,6 +431,16 @@ mod tests {
     }
 
     fn build_with(rows: &[MessageRow], is_group: bool, typing: bool) -> Transcript {
+        build_full(rows, is_group, typing, &HashMap::new(), &HashMap::new())
+    }
+
+    fn build_full(
+        rows: &[MessageRow],
+        is_group: bool,
+        typing: bool,
+        associated: &HashMap<String, Vec<MessageRow>>,
+        originals: &HashMap<String, MessageRow>,
+    ) -> Transcript {
         let names = Names::default();
         let to_local = |ms: i64| Utc.timestamp_millis_opt(ms).unwrap();
         let cx = Context {
@@ -275,6 +450,8 @@ mod tests {
             now: Utc.timestamp_millis_opt(1_800_000_000_000).unwrap(),
             to_local: &to_local,
             typing,
+            associated,
+            originals,
         };
         build(rows, &cx)
     }
@@ -383,5 +560,74 @@ mod tests {
         assert!(!jumbo("😂😂😂😂"));
         assert!(!jumbo("ok 👍"));
         assert!(!jumbo("1"));
+    }
+
+    fn attachment(guid: &str, name: &str, mime: Option<&str>) -> AttachmentRow {
+        AttachmentRow {
+            guid: guid.into(),
+            transfer_name: Some(name.into()),
+            mime_type: mime.map(Into::into),
+            total_bytes: Some(100),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn attachments_become_media_and_plugin_data_is_hidden() {
+        let mut m = msg(1, Some("a"), "\u{fffc}\u{fffc}look", T0);
+        m.attachments = vec![
+            attachment("p", "IMG_1.HEIC", None),
+            attachment("v", "clip.mov", Some("video/quicktime")),
+            attachment("x", "x.pluginPayloadAttachment", None),
+            attachment("f", "notes.pdf", Some("application/pdf")),
+        ];
+        m.attachments[3].hidden = false;
+        let t = build_with(&[m], false, false);
+        let b = bubbles(&t)[0];
+        assert_eq!(
+            b.media.iter().map(|m| m.kind).collect::<Vec<_>>(),
+            [MediaKind::Image, MediaKind::Video, MediaKind::File]
+        );
+        assert_eq!(b.text.as_deref(), Some("look"));
+        assert!(!b.jumbo);
+    }
+
+    #[test]
+    fn a_url_balloon_is_a_card_without_its_bare_url() {
+        let mut m = msg(1, Some("a"), "https://example.com/trailer", T0);
+        m.balloon_bundle_id = Some(URL_BALLOON.into());
+        m.attachments = vec![
+            attachment("icon", "a.pluginPayloadAttachment", None),
+            AttachmentRow {
+                total_bytes: Some(5000),
+                ..attachment("image", "b.pluginPayloadAttachment", None)
+            },
+        ];
+        let t = build_with(&[m], false, false);
+        let b = bubbles(&t)[0];
+        let link = b.link.as_ref().unwrap();
+        assert_eq!(link.host, "example.com");
+        assert_eq!(link.image.as_ref().unwrap().guid, "image");
+        assert_eq!(b.text, None);
+        assert!(b.media.is_empty());
+    }
+
+    #[test]
+    fn tapbacks_and_quotes_attach_to_their_message() {
+        let original = msg(1, Some("a"), "dinner at 8?", T0);
+        let mut reply = msg(2, None, "works for me", T0 + 1000);
+        reply.thread_originator_guid = Some(original.guid.clone());
+        let mut love = msg(3, Some("a"), "Loved “works for me”", T0 + 2000);
+        love.associated_guid = Some(reply.guid.clone());
+        love.associated_type = Some("love".into());
+        let associated = HashMap::from([(reply.guid.clone(), vec![love])]);
+        let originals = HashMap::from([(original.guid.clone(), original.clone())]);
+        let t = build_full(&[original, reply], false, false, &associated, &originals);
+        let b = bubbles(&t);
+        assert!(b[0].reactions.is_empty());
+        assert_eq!(b[1].reactions.len(), 1);
+        assert_eq!(b[1].reactions[0].tapback, bb_core::Tapback::Love);
+        let quote = b[1].quote.as_ref().unwrap();
+        assert_eq!(quote.text, "dinner at 8?");
     }
 }

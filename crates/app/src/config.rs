@@ -50,7 +50,24 @@ impl Config {
 /// The cache for one server: a file per server address, so two servers
 /// never share rows.
 pub fn database_path(server_url: &str) -> PathBuf {
-    // FNV-1a: stable across runs and Rust versions.
+    data_dir()
+        .join("servers")
+        .join(format!("{}.sqlite", server_key(server_url)))
+}
+
+/// Downloaded attachments for one server. They can always be fetched
+/// again, so they live in the cache directory.
+pub fn attachments_dir(server_url: &str) -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(APP_ID)
+        .join(server_key(server_url))
+        .join("attachments")
+}
+
+/// A stable name for a server address (FNV-1a: the same across runs and
+/// Rust versions).
+fn server_key(server_url: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in server_url
         .trim_end_matches('/')
@@ -60,7 +77,5 @@ pub fn database_path(server_url: &str) -> PathBuf {
         hash ^= u64::from(b);
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
-    data_dir()
-        .join("servers")
-        .join(format!("{hash:016x}.sqlite"))
+    format!("{hash:016x}")
 }

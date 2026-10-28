@@ -41,11 +41,13 @@ impl EventEmitter<SessionEvent> for Session {}
 impl Session {
     pub fn start(server: ServerConfig, cx: &mut App) -> anyhow::Result<Entity<Self>> {
         let path = config::database_path(server.url.as_str());
+        let attachments_dir = config::attachments_dir(server.url.as_str());
         let engine_store = Store::open(&path)?;
         let store = Store::open(&path)?;
         let region = Region::from_locale();
         let mut engine_config = EngineConfig::new(server, engine_store);
         engine_config.region = region;
+        engine_config.attachments_dir = attachments_dir;
         let handle = Runtime::handle(cx);
         let (engine, mut events) = {
             let _runtime = handle.enter();
