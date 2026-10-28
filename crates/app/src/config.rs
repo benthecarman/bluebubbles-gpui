@@ -1,0 +1,66 @@
+//! Settings on disk (`~/.config/bluebubbles-gpui/config.json`) and where
+//! each server's cache lives. The password is not here: it is in the
+//! keyring (see `credentials`).
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+pub const APP_ID: &str = "bluebubbles-gpui";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    pub server_url: Option<String>,
+    /// For servers behind a self-signed certificate.
+    pub accept_invalid_certs: bool,
+    /// `system`, `light` or `dark`.
+    pub appearance: Option<String>,
+}
+
+pub fn config_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(APP_ID)
+}
+
+pub fn data_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(APP_ID)
+}
+
+impl Config {
+    pub fn load() -> Self {
+        let path = config_dir().join("config.json");
+        std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let dir = config_dir();
+        std::fs::create_dir_all(&dir)?;
+        let tmp = dir.join("config.json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(self).unwrap_or_default())?;
+        std::fs::rename(tmp, dir.join("config.json"))
+    }
+}
+
+/// The cache for one server: a file per server address, so two servers
+/// never share rows.
+pub fn database_path(server_url: &str) -> PathBuf {
+    // FNV-1a: stable across runs and Rust versions.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in server_url
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+        .bytes()
+    {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    data_dir()
+        .join("servers")
+        .join(format!("{hash:016x}.sqlite"))
+}

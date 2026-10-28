@@ -11,5 +11,20 @@ name = "bluebubbles-gpui"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+bb-api = { path = "../api" }
+bb-core = { path = "../core" }
+bb-store = { path = "../store" }
 bb-ui = { path = "../ui" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "6"
+futures.workspace = true
 gpui-kit.workspace = true
+oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-segmentation = "1"
+url.workspace = true
