@@ -227,11 +227,13 @@ impl Theme {
             t.preference = preference;
             t.resolve();
         });
+        crate::kit::sync(cx);
         cx.refresh_windows();
     }
 
     pub fn set_text_scale(scale: f32, cx: &mut App) {
         cx.update_global::<Theme, _>(|t, _| t.text_scale = scale.clamp(0.8, 1.6));
+        crate::kit::sync(cx);
         cx.refresh_windows();
     }
 
@@ -245,6 +247,7 @@ impl Theme {
             before != t.appearance
         });
         if changed {
+            crate::kit::sync(cx);
             cx.refresh_windows();
         }
     }

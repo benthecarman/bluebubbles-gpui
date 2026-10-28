@@ -1,9 +1,14 @@
 //! The Messages look for GPUI.
 
+pub mod assets;
+pub mod avatar;
 pub mod bubble;
 pub mod fonts;
+pub mod kit;
 pub mod theme;
 
+pub use assets::{Assets, Icon, icon};
+pub use avatar::{Avatar, Face};
 pub use bubble::{Bubble, Tail};
 pub use theme::{ActiveTheme, Appearance, Colors, Metrics, Preference, Theme};
 
@@ -17,6 +22,7 @@ pub fn init(cx: &mut App) {
     // on coloured bubbles.
     cx.set_text_rendering_mode(TextRenderingMode::Grayscale);
     Theme::init(cx);
+    kit::sync(cx);
 }
 
 pub trait TypeStyled: Styled + Sized {
