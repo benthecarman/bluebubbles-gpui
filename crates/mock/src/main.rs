@@ -2,8 +2,10 @@
 //! without a Mac.
 //!
 //! Usage: bb-mock-server [--host 127.0.0.1] [--port 1234] [--password demo] [--live]
+//!                       [--no-private-api]
 //!
 //! `--host` binds another address, such as a Tailscale one.
+//! `--no-private-api` reports a server without the Private API helper.
 //!
 //! `--live` makes someone type and send a message every so often.
 
@@ -21,6 +23,7 @@ async fn main() {
     let mut port = 1234u16;
     let mut password = "demo".to_owned();
     let mut live = false;
+    let mut private_api = true;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -28,6 +31,7 @@ async fn main() {
             "--port" => port = args.next().and_then(|p| p.parse().ok()).unwrap_or(port),
             "--password" => password = args.next().unwrap_or(password),
             "--live" => live = true,
+            "--no-private-api" => private_api = false,
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(2);
@@ -36,6 +40,12 @@ async fn main() {
     }
     let server = MockServer::start_on((host, port).into(), &password).await;
     seed_demo(&server);
+    if !private_api {
+        server.set_info(|i| {
+            i.private_api = Some(false);
+            i.helper_connected = Some(false);
+        });
+    }
     println!(
         "mock BlueBubbles server at {} (password {password:?})",
         server.url()

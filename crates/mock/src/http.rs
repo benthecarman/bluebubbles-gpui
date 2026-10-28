@@ -491,9 +491,23 @@ async fn react(
         .to_owned();
     let reaction = body["reaction"].as_str().unwrap_or_default().to_owned();
     let part = body["partIndex"].as_i64().unwrap_or(0);
+    // Messages' own wording, which clients show as the preview.
+    let verb = match reaction.trim_start_matches('-') {
+        "love" => "Loved",
+        "like" => "Liked",
+        "dislike" => "Disliked",
+        "laugh" => "Laughed at",
+        "emphasize" => "Emphasized",
+        "question" => "Questioned",
+        _ => "Reacted to",
+    };
+    let verb = if reaction.starts_with('-') {
+        format!("Removed a {} from", reaction.trim_start_matches('-'))
+    } else {
+        verb.to_owned()
+    };
     let text = format!(
-        "{} “{}”",
-        reaction,
+        "{verb} “{}”",
         body["selectedMessageText"].as_str().unwrap_or_default()
     );
     let m = store_sent(
