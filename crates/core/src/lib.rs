@@ -9,6 +9,7 @@ mod downloads;
 mod engine;
 pub mod names;
 mod outbox;
+pub mod rich_link;
 mod sync;
 pub mod tapback;
 
