@@ -598,7 +598,30 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
                         .child(subject.to_owned()),
                 );
             }
-            body = body.child(text.clone());
+            let links = transcript::links(text);
+            if links.is_empty() {
+                body = body.child(text.clone());
+            } else {
+                let underline = HighlightStyle {
+                    underline: Some(UnderlineStyle {
+                        thickness: px(1.),
+                        color: Some(fg),
+                        wavy: false,
+                    }),
+                    ..Default::default()
+                };
+                let styled = StyledText::new(text.clone())
+                    .with_highlights(links.iter().map(|(r, _)| (r.clone(), underline)));
+                let urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
+                body = body.child(InteractiveText::new(("text", id as u64), styled).on_click(
+                    links.into_iter().map(|(r, _)| r).collect(),
+                    move |ix, _, cx| {
+                        if let Some(url) = urls.get(ix) {
+                            cx.open_url(url);
+                        }
+                    },
+                ));
+            }
             content = content.child(Bubble::new(fill, m.bubble_radius(), tail).child(body));
         }
     }

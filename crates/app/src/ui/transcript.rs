@@ -234,6 +234,37 @@ fn is_plugin_payload(a: &AttachmentRow) -> bool {
         .is_some_and(|n| n.contains("pluginPayloadAttachment"))
 }
 
+/// The links in a message's text, as byte ranges and the URL each
+/// opens: words starting with `http://`, `https://` or `www.`, without
+/// the punctuation that ends a sentence.
+pub fn links(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, c) in text.char_indices().chain([(text.len(), ' ')]) {
+        match (c.is_whitespace(), start) {
+            (false, None) => start = Some(i),
+            (true, Some(s)) => {
+                let word = text[s..i]
+                    .trim_end_matches(['.', ',', '!', '?', ')', ']', '\'', '"', '”', ':', ';']);
+                let lower = word.to_ascii_lowercase();
+                let url = if lower.starts_with("http://") || lower.starts_with("https://") {
+                    Some(word.to_owned())
+                } else if lower.starts_with("www.") && word.len() > 4 {
+                    Some(format!("https://{word}"))
+                } else {
+                    None
+                };
+                if let Some(url) = url.filter(|u| u.contains('.')) {
+                    out.push((s..s + word.len(), url));
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn looks_like_url(text: &str) -> bool {
     let t = text.trim();
     !t.contains(char::is_whitespace)
@@ -629,5 +660,16 @@ mod tests {
         assert_eq!(b[1].reactions[0].tapback, bb_core::Tapback::Love);
         let quote = b[1].quote.as_ref().unwrap();
         assert_eq!(quote.text, "dinner at 8?");
+    }
+
+    #[test]
+    fn finds_links_in_text() {
+        let text = "See https://example.com/a?b=1. Or www.example.org, not e.g. this";
+        let found = links(text);
+        assert_eq!(found.len(), 2);
+        assert_eq!(&text[found[0].0.clone()], "https://example.com/a?b=1");
+        assert_eq!(found[1].1, "https://www.example.org");
+        assert!(links("no links here").is_empty());
+        assert!(links("https://").is_empty());
     }
 }
