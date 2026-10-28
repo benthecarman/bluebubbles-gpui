@@ -1,5 +1,5 @@
-//! Settings, over the window: keeping the app in the tray, notifications
-//! (with a test), and appearance. Opened with Ctrl+, the sidebar's gear or
+//! Settings, over the window: keeping the app in the tray, spellcheck,
+//! notifications (with a test), and appearance. Opened with Ctrl+, the sidebar's gear or
 //! the tray menu.
 
 use crate::shell::{self, Shell};
@@ -148,6 +148,14 @@ impl Render for Settings {
              on the AppIndicator extension (Ubuntu has it on by default)."
                 .into()
         };
+        let spelling = Switch::new("spell-check")
+            .color(colors.accent)
+            .checked(config.spell_check())
+            .on_click(|on, _, cx| {
+                let on = *on;
+                shell::update_config(cx, |c| c.spell_check = Some(on));
+                cx.refresh_windows();
+            });
         let notify = Switch::new("notifications")
             .color(colors.accent)
             .checked(config.notifications())
@@ -257,6 +265,15 @@ impl Render for Settings {
                 "Keep running when the window is closed",
                 keep.into_any_element(),
                 Some(keep_note),
+            ))
+            .child(row(
+                "Check spelling while typing",
+                spelling.into_any_element(),
+                Some(
+                    "Right-click an underlined word for suggestions. Words you add are kept in \
+                     ~/.config/bluebubbles-gpui/dictionary.txt."
+                        .into(),
+                ),
             ))
             .child(heading("NOTIFICATIONS"))
             .child(row(

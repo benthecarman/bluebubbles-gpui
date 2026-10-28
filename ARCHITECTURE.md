@@ -137,6 +137,15 @@ clears after 60 s without an update.
 - The composer is gpui-kit's textarea: Enter sends, Shift+Enter adds a
   line, numpad Enter is Enter, and shortcuts ignore Num Lock. Files can be
   pasted or dropped onto it.
+- Spellcheck (`spell.rs`) uses spellbook, a pure-Rust Hunspell reader,
+  with an en_US dictionary built into the binary. For other locales it
+  uses the system's Hunspell dictionary when one is installed. The
+  textarea draws decorations only in editor mode, so the composer paints
+  the squiggles in a canvas over the field from `range_to_bounds`. The
+  word at the caret is marked only after the caret leaves it. The
+  right-click menu replaces the textarea's default one, with suggestions,
+  Ignore Spelling (for this run only) and Add to Dictionary (saved in
+  `dictionary.txt` in the config directory).
 - Images are fetched once into a disk cache and decoded off the UI
   thread. HEIC photos are requested from the server as JPEG.
 - The More (⋯) menu above the conversation list has Mark All as Read,

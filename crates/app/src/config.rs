@@ -19,6 +19,8 @@ pub struct Config {
     pub keep_running: Option<bool>,
     /// Desktop notifications for new messages (default on).
     pub notifications: Option<bool>,
+    /// Red squiggles under misspelled words in the composer (default on).
+    pub spell_check: Option<bool>,
 }
 
 pub fn config_dir() -> PathBuf {
@@ -34,6 +36,10 @@ pub fn data_dir() -> PathBuf {
 }
 
 impl Config {
+    pub fn spell_check(&self) -> bool {
+        self.spell_check.unwrap_or(true)
+    }
+
     pub fn keep_running(&self) -> bool {
         self.keep_running.unwrap_or(true)
     }

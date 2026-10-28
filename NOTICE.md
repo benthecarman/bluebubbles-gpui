@@ -7,6 +7,14 @@ The app icon (`assets/icons/bluebubbles-*.png`) is resized from
 Apache License 2.0. This project is an independent client for the
 BlueBubbles Server and is not affiliated with the BlueBubbles project.
 
+## Dictionary
+
+The en_US Hunspell dictionary (`assets/dictionaries`) is version
+2020.12.07, made from [SCOWL](http://wordlist.aspell.net) by Kevin
+Atkinson and others. Its permissive license is in
+`assets/dictionaries/en_US.license`, which the .deb installs as
+`usr/share/doc/bluebubbles-gpui/en_US.license`.
+
 ## Fonts
 
 - Inter 4.1 (`assets/fonts/inter`), SIL Open Font License 1.1, by The

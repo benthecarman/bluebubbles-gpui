@@ -23,6 +23,8 @@ gpui-kit.workspace = true
 # For its activation-token patch; third_party/README.md.
 gpui-pre-linux = "0.3.8"
 image.workspace = true
+# Hunspell-compatible spellchecking for the composer.
+spellbook = "0.4"
 ksni = { version = "0.3", default-features = false, features = ["async-io"] }
 oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
 serde.workspace = true
@@ -50,4 +52,5 @@ assets = [
     ["../../assets/icons/bluebubbles-256.png", "usr/share/icons/hicolor/256x256/apps/bluebubbles-gpui.png", "644"],
     ["../../assets/icons/bluebubbles-512.png", "usr/share/icons/hicolor/512x512/apps/bluebubbles-gpui.png", "644"],
     ["../../NOTICE.md", "usr/share/doc/bluebubbles-gpui/", "644"],
+    ["../../assets/dictionaries/en_US.license", "usr/share/doc/bluebubbles-gpui/", "644"],
 ]

@@ -4,20 +4,85 @@
 //!
 //! Files dropped on the conversation, and images or files pasted, wait
 //! in the field until the message is sent; they go out before its text.
+//!
+//! Misspelled words get a red squiggle once typed past; right-click one
+//! for suggestions, Ignore Spelling or Add to Dictionary.
 
 use crate::config;
 use crate::session::{Session, SessionEvent};
+use crate::shell::Shell;
+use crate::spell;
 use crate::ui::media;
 use crate::ui::people;
 use bb_core::TextMessage;
 use bb_ui::{ActiveTheme, Icon, icon};
 use gpui_kit::component::Sizable;
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{
+    Copy, Cut, InputEvent, Paste, SelectAll, Textarea, TextareaState,
+};
+use gpui_kit::component::native_menu::NativeMenu;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use serde::Deserialize;
+use std::cell::RefCell;
+use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Replaces a misspelled `word` at `range` with a suggestion.
+#[derive(Clone, PartialEq, Deserialize, Action)]
+#[action(namespace = composer, no_json)]
+struct ReplaceMisspelling {
+    range: Range<usize>,
+    word: String,
+    with: String,
+}
+
+#[derive(Clone, PartialEq, Deserialize, Action)]
+#[action(namespace = composer, no_json)]
+struct IgnoreSpelling {
+    word: String,
+}
+
+#[derive(Clone, PartialEq, Deserialize, Action)]
+#[action(namespace = composer, no_json)]
+struct LearnSpelling {
+    word: String,
+}
+
+/// The misspellings of the field's text, worked out again only when the
+/// text, the word being typed or the accepted words change.
+#[derive(Default)]
+struct Spelling {
+    key: Option<(SharedString, Option<Range<usize>>, u64)>,
+    ranges: Vec<Range<usize>>,
+}
+
+impl Spelling {
+    /// Misspelled ranges as `input` is now. While the field has focus, the
+    /// word at the caret is left until it's typed past.
+    fn ranges(&mut self, input: &TextareaState, focused: bool) -> &[Range<usize>] {
+        let text = input.value();
+        let caret = focused.then(|| input.cursor());
+        let typing = caret.and_then(|c| word_at(&text, c));
+        let key = (text.clone(), typing, spell::generation());
+        if self.key.as_ref() != Some(&key) {
+            self.ranges = spell::misspelled(&text, caret);
+            self.key = Some(key);
+        }
+        &self.ranges
+    }
+}
+
+/// The word containing or ending at `offset`.
+fn word_at(text: &str, offset: usize) -> Option<Range<usize>> {
+    use unicode_segmentation::UnicodeSegmentation;
+    text.unicode_word_indices()
+        .map(|(start, w)| start..start + w.len())
+        .find(|r| r.start <= offset && offset <= r.end)
+}
 
 /// The message being replied to, shown above the field.
 #[derive(Clone)]
@@ -48,6 +113,7 @@ pub struct Composer {
     error: Option<SharedString>,
     staged: Vec<Staged>,
     reply_to: Option<ReplyTo>,
+    spelling: Rc<RefCell<Spelling>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -107,6 +173,7 @@ impl Composer {
             error: None,
             staged: Vec::new(),
             reply_to: None,
+            spelling: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -160,6 +227,22 @@ impl Composer {
             })
             .await;
         }));
+    }
+
+    fn replace_misspelling(
+        &mut self,
+        action: &ReplaceMisspelling,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.update(cx, |s, cx| {
+            // The text may have changed since the menu opened.
+            if s.value().get(action.range.clone()) != Some(action.word.as_str()) {
+                return;
+            }
+            s.set_selected_range(action.range.clone(), cx);
+            s.replace(action.with.clone(), window, cx);
+        });
     }
 
     /// Makes the next message a reply (sent as one only where the server
@@ -356,6 +439,15 @@ impl Render for Composer {
             colors.imessage
         };
         div()
+            .on_action(cx.listener(Self::replace_misspelling))
+            .on_action(cx.listener(|_, a: &IgnoreSpelling, _, cx| {
+                spell::ignore(&a.word);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|_, a: &LearnSpelling, _, cx| {
+                spell::learn(&a.word);
+                cx.notify();
+            }))
             .flex_none()
             .px(px(14.))
             .pt(px(6.))
@@ -425,17 +517,33 @@ impl Render for Composer {
                             .flex_col()
                             .when(!self.staged.is_empty(), |d| d.child(self.staged_row(cx)))
                             .child(
-                                Textarea::new(&self.input)
-                                    .appearance(false)
-                                    .small()
-                                    .text_size(m.message_text())
-                                    .on_paste({
-                                        let this = cx.entity().downgrade();
-                                        move |item, _, cx| {
-                                            this.update(cx, |this, cx| this.paste(item, cx))
-                                                .unwrap_or(false)
-                                        }
-                                    }),
+                                div()
+                                    .relative()
+                                    .child(
+                                        Textarea::new(&self.input)
+                                            .appearance(false)
+                                            .small()
+                                            .text_size(m.message_text())
+                                            .on_paste({
+                                                let this = cx.entity().downgrade();
+                                                move |item, _, cx| {
+                                                    this.update(cx, |this, cx| this.paste(item, cx))
+                                                        .unwrap_or(false)
+                                                }
+                                            })
+                                            .context_menu({
+                                                let input = self.input.clone();
+                                                let spelling = self.spelling.clone();
+                                                move |menu, _, cx| {
+                                                    context_menu(menu, &input, &spelling, cx)
+                                                }
+                                            }),
+                                    )
+                                    .child(squiggles(
+                                        self.input.clone(),
+                                        self.spelling.clone(),
+                                        colors.error,
+                                    )),
                             ),
                     )
                     .child(
@@ -456,4 +564,110 @@ impl Render for Composer {
                     ),
             )
     }
+}
+
+fn spell_check_on(cx: &App) -> bool {
+    cx.global::<Shell>().config.spell_check()
+}
+
+/// Red squiggles under misspelled words, drawn over the field after it
+/// lays out its text.
+fn squiggles(
+    input: Entity<TextareaState>,
+    spelling: Rc<RefCell<Spelling>>,
+    color: Hsla,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, window, cx| {
+            if !spell_check_on(cx) {
+                return;
+            }
+            let state = input.read(cx);
+            let focused = state.focus_handle(cx).is_focused(window);
+            let mut spelling = spelling.borrow_mut();
+            let ranges = spelling.ranges(state, focused);
+            if ranges.is_empty() {
+                return;
+            }
+            let style = UnderlineStyle {
+                color: Some(color),
+                thickness: px(1.),
+                wavy: true,
+            };
+            let clip = ContentMask {
+                bounds: state.input_bounds(),
+            };
+            window.with_content_mask(Some(clip), |window| {
+                for range in ranges {
+                    let Some(word) = state.range_to_bounds(range) else {
+                        continue;
+                    };
+                    let line = state
+                        .range_to_bounds(&(range.start..range.start))
+                        .map_or(word.size.height, |b| b.size.height);
+                    // A word broken across lines; rare enough to leave bare.
+                    if word.size.height > line * 1.5 {
+                        continue;
+                    }
+                    let origin = point(word.left(), word.bottom() - line * 0.18);
+                    window.paint_underline(origin, word.size.width, &style);
+                }
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// The field's right-click menu: for a misspelled word, its suggestions,
+/// Ignore Spelling and Add to Dictionary above the usual editing items.
+fn context_menu(
+    mut menu: NativeMenu,
+    input: &Entity<TextareaState>,
+    spelling: &Rc<RefCell<Spelling>>,
+    cx: &mut App,
+) -> NativeMenu {
+    let state = input.read(cx);
+    let selection = state.selected_range();
+    if spell_check_on(cx) {
+        let text = state.value();
+        // A right-click moved the caret to the word; it isn't being typed.
+        let ranges = spelling.borrow_mut().ranges(state, false).to_vec();
+        let caret = state.cursor();
+        if let Some(range) = ranges
+            .into_iter()
+            .find(|r| r.start <= caret && caret <= r.end)
+        {
+            let word = text[range.clone()].to_owned();
+            let suggestions = spell::suggestions(&word);
+            if suggestions.is_empty() {
+                menu = menu.menu_with_disabled("No Guesses Found", true, Box::new(NoAction));
+            }
+            for with in suggestions {
+                menu = menu.menu(
+                    with.clone(),
+                    Box::new(ReplaceMisspelling {
+                        range: range.clone(),
+                        word: word.clone(),
+                        with,
+                    }),
+                );
+            }
+            menu = menu
+                .separator()
+                .menu(
+                    "Ignore Spelling",
+                    Box::new(IgnoreSpelling { word: word.clone() }),
+                )
+                .menu("Add to Dictionary", Box::new(LearnSpelling { word }))
+                .separator();
+        }
+    }
+    let copyable = !selection.is_empty();
+    menu.menu_with_disabled("Cut", !copyable, Box::new(Cut))
+        .menu_with_disabled("Copy", !copyable, Box::new(Copy))
+        .menu("Paste", Box::new(Paste))
+        .separator()
+        .menu("Select All", Box::new(SelectAll))
 }
