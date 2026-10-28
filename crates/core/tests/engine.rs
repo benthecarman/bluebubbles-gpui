@@ -633,3 +633,50 @@ async fn attachments_download_once_the_mac_has_them() {
     assert!(downloads >= 2, "retried: {downloads}");
     std::fs::remove_dir_all(std::path::Path::new(&path).parent().unwrap()).ok();
 }
+
+#[tokio::test]
+async fn a_file_still_reaching_the_mac_is_not_downloaded_yet() {
+    let server = MockServer::start(PASSWORD).await;
+    server.add_chat(&dm(demo::ALEX), None, &[demo::ALEX]);
+    let (engine, _events, store) = synced(&server).await;
+    let m = server.receive_with(&dm(demo::ALEX), demo::ALEX, "", |m| {
+        m.attachments = vec![bb_api::Attachment {
+            guid: "at-video".into(),
+            mime_type: Some("video/quicktime".into()),
+            transfer_name: Some("clip.mov".into()),
+            transfer_state: Some(1),
+            ..Default::default()
+        }];
+    });
+    // The server would stream the part that has arrived so far.
+    server.add_attachment_data("at-video", "video/quicktime", b"partial".to_vec());
+    wait_until(|| store.attachment("at-video").unwrap().is_some()).await;
+    engine.download("at-video");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !server
+            .requests()
+            .iter()
+            .any(|r| r.contains("/attachment/at-video/download"))
+    );
+
+    server.add_attachment_data("at-video", "video/quicktime", b"whole".to_vec());
+    server.update(&m.guid, true, |m| m.attachments[0].transfer_state = Some(5));
+    wait_until(|| {
+        store
+            .attachment("at-video")
+            .unwrap()
+            .unwrap()
+            .local_path
+            .is_some()
+    })
+    .await;
+    let path = store
+        .attachment("at-video")
+        .unwrap()
+        .unwrap()
+        .local_path
+        .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"whole");
+    std::fs::remove_dir_all(std::path::Path::new(&path).parent().unwrap()).ok();
+}

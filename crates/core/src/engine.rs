@@ -35,6 +35,9 @@ pub enum EngineError {
     Store(#[from] StoreError),
 }
 
+/// An attachment's `transfer_state` once the Mac has the whole file.
+const TRANSFER_DONE: i64 = 5;
+
 /// Delays and intervals, shortened in tests.
 #[derive(Debug, Clone)]
 pub struct Timings {
@@ -915,8 +918,23 @@ impl Core {
         let path = self.attachments_dir.join(downloads::file_name(&attachment));
         let api = self.api.clone();
         let tx = self.internal.clone();
+        // The server streams whatever is on disk, so a file still reaching
+        // the Mac would come back cut short.
+        let check_transfer = attachment
+            .transfer_state
+            .is_some_and(|s| s != TRANSFER_DONE);
         tokio::spawn(async move {
             let result = async {
+                if check_transfer {
+                    let state = api
+                        .attachment(&guid)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .transfer_state;
+                    if state.is_some_and(|s| s != TRANSFER_DONE) {
+                        return Err(format!("still transferring (state {state:?})"));
+                    }
+                }
                 let bytes = api
                     .download_attachment(&guid, Default::default())
                     .await

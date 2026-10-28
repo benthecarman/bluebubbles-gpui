@@ -31,6 +31,7 @@ pub(crate) fn router(shared: Shared) -> Router {
         .route("/api/v1/message/{guid}", get(message_get))
         .route("/api/v1/message/{guid}/edit", post(edit))
         .route("/api/v1/message/{guid}/unsend", post(unsend))
+        .route("/api/v1/attachment/{guid}", get(attachment_get))
         .route("/api/v1/attachment/{guid}/download", get(download))
         .route("/api/v1/contact", get(contacts))
         .with_state(shared)
@@ -608,6 +609,26 @@ async fn chat_icon(
 ) -> Response {
     authed!(s, q, method, uri);
     error(StatusCode::NOT_FOUND, "no icon", None)
+}
+
+async fn attachment_get(
+    State(s): State<Shared>,
+    Path(guid): Path<String>,
+    Query(q): Q,
+    method: Method,
+    uri: Uri,
+) -> Response {
+    authed!(s, q, method, uri);
+    let st = s.lock();
+    let found = st
+        .messages
+        .iter()
+        .flat_map(|m| &m.message.attachments)
+        .find(|a| a.guid == guid);
+    match found {
+        Some(a) => ok(serde_json::to_value(a).unwrap_or_default()),
+        None => error(StatusCode::NOT_FOUND, "Attachment does not exist!", None),
+    }
 }
 
 async fn download(

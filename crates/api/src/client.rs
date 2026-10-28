@@ -1,4 +1,4 @@
-use crate::models::{Chat, Contact, Envelope, Message, ServerInfo};
+use crate::models::{Attachment, Chat, Contact, Envelope, Message, ServerInfo};
 use reqwest::{Method, StatusCode, multipart};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -589,6 +589,18 @@ impl Client {
                 "tempGuid": temp_guid,
                 "method": method,
             })),
+        )
+        .await
+    }
+
+    /// An attachment's metadata; `transfer_state` 5 means the Mac has
+    /// the whole file.
+    pub async fn attachment(&self, guid: &str) -> Result<Attachment, ApiError> {
+        self.data(
+            Method::GET,
+            &format!("attachment/{}", encode(guid)),
+            &[],
+            None,
         )
         .await
     }
