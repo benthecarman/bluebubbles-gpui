@@ -29,3 +29,21 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-segmentation = "1"
 url.workspace = true
+
+[package.metadata.deb]
+name = "bluebubbles-gpui"
+maintainer = "Ben Carman <benthecarman@live.com>"
+copyright = "2026, BlueBubbles GPUI contributors"
+license-file = ["../../LICENSE", "0"]
+extended-description = "Native desktop client for the BlueBubbles Server: iMessage and SMS from your Mac, in a window laid out like Apple's Messages."
+section = "net"
+priority = "optional"
+depends = "$auto, libvulkan1, libxkbcommon-x11-0, libwayland-client0, libfontconfig1, gnome-keyring | kwalletmanager | keepassxc"
+assets = [
+    ["target/release/bluebubbles-gpui", "usr/bin/", "755"],
+    ["../../packaging/linux/bluebubbles-gpui.desktop", "usr/share/applications/", "644"],
+    ["../../assets/icons/bluebubbles-128.png", "usr/share/icons/hicolor/128x128/apps/bluebubbles-gpui.png", "644"],
+    ["../../assets/icons/bluebubbles-256.png", "usr/share/icons/hicolor/256x256/apps/bluebubbles-gpui.png", "644"],
+    ["../../assets/icons/bluebubbles-512.png", "usr/share/icons/hicolor/512x512/apps/bluebubbles-gpui.png", "644"],
+    ["../../NOTICE.md", "usr/share/doc/bluebubbles-gpui/", "644"],
+]

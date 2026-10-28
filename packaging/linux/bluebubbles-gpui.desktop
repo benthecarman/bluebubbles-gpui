@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=BlueBubbles
+GenericName=Messages
+Comment=iMessage through your Mac's BlueBubbles Server
+Exec=bluebubbles-gpui
+Icon=bluebubbles-gpui
+Terminal=false
+Categories=Network;Chat;InstantMessaging;
+Keywords=iMessage;SMS;Messages;
+StartupWMClass=bluebubbles-gpui
+X-GNOME-UsesNotifications=true
