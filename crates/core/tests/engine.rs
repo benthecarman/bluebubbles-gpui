@@ -26,6 +26,7 @@ fn timings() -> Timings {
         send_give_up: Duration::from_secs(600),
         contacts_every: Duration::from_secs(600),
         notify_window: Duration::from_secs(900),
+        download_retry: Duration::from_millis(40),
         socket_backoff: Backoff {
             min: Duration::from_millis(20),
             max: Duration::from_millis(100),
@@ -42,6 +43,12 @@ fn start(
     let mut config = EngineConfig::new(ServerConfig::new(url, password), store.clone());
     config.region = Region::new("US");
     config.timings = timings();
+    static DIRS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    config.attachments_dir = std::env::temp_dir().join(format!(
+        "bb-engine-test-{}-{}",
+        std::process::id(),
+        DIRS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     Engine::spawn(config).unwrap()
 }
 
@@ -570,4 +577,59 @@ async fn without_the_private_api_only_safe_requests_go_out() {
     );
     // The reply was sent as a plain message.
     assert!(server.messages()[1].thread_originator_guid.is_none());
+}
+
+#[tokio::test]
+async fn attachments_download_once_the_mac_has_them() {
+    let server = MockServer::start(PASSWORD).await;
+    server.add_chat(&dm(demo::ALEX), None, &[demo::ALEX]);
+    let (engine, _events, store) = synced(&server).await;
+    server.receive_with(&dm(demo::ALEX), demo::ALEX, "", |m| {
+        m.attachments = vec![bb_api::Attachment {
+            guid: "at-photo".into(),
+            mime_type: Some("image/heic".into()),
+            transfer_name: Some("IMG_0001.HEIC".into()),
+            ..Default::default()
+        }];
+    });
+    wait_until(|| store.attachment("at-photo").unwrap().is_some()).await;
+
+    // Not on the Mac yet: the download fails, and is retried.
+    engine.download("at-photo");
+    engine.download("at-photo");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        store
+            .attachment("at-photo")
+            .unwrap()
+            .unwrap()
+            .local_path
+            .is_none()
+    );
+    server.add_attachment_data("at-photo", "image/jpeg", b"jpeg bytes".to_vec());
+    wait_until(|| {
+        store
+            .attachment("at-photo")
+            .unwrap()
+            .unwrap()
+            .local_path
+            .is_some()
+    })
+    .await;
+    let path = store
+        .attachment("at-photo")
+        .unwrap()
+        .unwrap()
+        .local_path
+        .unwrap();
+    // Stored by GUID, as the JPEG the server converts HEIC to.
+    assert!(path.ends_with("/at-photo.jpg"), "{path}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"jpeg bytes");
+    let downloads = server
+        .requests()
+        .iter()
+        .filter(|r| r.contains("/attachment/at-photo/download"))
+        .count();
+    assert!(downloads >= 2, "retried: {downloads}");
+    std::fs::remove_dir_all(std::path::Path::new(&path).parent().unwrap()).ok();
 }

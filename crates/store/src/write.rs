@@ -254,6 +254,28 @@ impl Store {
         Ok(out)
     }
 
+    /// Records where an attachment's file was saved; the message changes.
+    pub fn set_attachment_file(&self, guid: &str, path: &str) -> Result<Changes> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE attachments SET local_path = ?2 WHERE guid = ?1",
+            params![guid, path],
+        )?;
+        let mut changes = Changes::default();
+        let found: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT m.chat_id, m.id FROM attachments a JOIN messages m ON m.id = a.message_id
+                 WHERE a.guid = ?1",
+                [guid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((chat, id)) = found {
+            changes.message(chat, id);
+        }
+        Ok(changes)
+    }
+
     pub fn set_draft(&self, chat_id: i64, draft: Option<&str>) -> Result<()> {
         self.lock().execute(
             "UPDATE chats SET draft = ?2 WHERE id = ?1",

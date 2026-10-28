@@ -5,6 +5,7 @@
 //! so a slow upload or a long catch-up never holds up socket events.
 
 use crate::address::Region;
+use crate::downloads::{self, Downloads};
 use crate::names::Names;
 use crate::now_ms;
 use crate::outbox::{self, Job, Outbound, Outcome};
@@ -57,6 +58,8 @@ pub struct Timings {
     pub contacts_every: Duration,
     /// Messages older than this when they arrive don't notify.
     pub notify_window: Duration,
+    /// The first retry of a failed attachment download; later ones back off.
+    pub download_retry: Duration,
     pub socket_backoff: Backoff,
 }
 
@@ -73,6 +76,7 @@ impl Default for Timings {
             send_give_up: Duration::from_secs(10 * 60),
             contacts_every: Duration::from_secs(6 * 60 * 60),
             notify_window: Duration::from_secs(15 * 60),
+            download_retry: Duration::from_secs(2),
             socket_backoff: Backoff::default(),
         }
     }
@@ -83,6 +87,8 @@ pub struct EngineConfig {
     pub store: Store,
     pub region: Region,
     pub timings: Timings,
+    /// Where downloaded attachments are kept.
+    pub attachments_dir: PathBuf,
 }
 
 impl EngineConfig {
@@ -92,6 +98,7 @@ impl EngineConfig {
             store,
             region: Region::from_locale(),
             timings: Timings::default(),
+            attachments_dir: std::env::temp_dir().join("bluebubbles-attachments"),
         }
     }
 }
@@ -211,6 +218,7 @@ enum Command {
         active: bool,
     },
     LoadOlder(i64),
+    Download(String),
     View {
         chat_id: Option<i64>,
         focused: bool,
@@ -234,6 +242,10 @@ pub(crate) enum Internal {
         chat_id: i64,
         chat_guid: String,
         result: Result<Vec<Message>, ApiError>,
+    },
+    Downloaded {
+        guid: String,
+        result: Result<PathBuf, String>,
     },
 }
 
@@ -303,6 +315,8 @@ impl Engine {
             focused: false,
             fetching_chats: HashSet::new(),
             loading_history: HashSet::new(),
+            attachments_dir: config.attachments_dir,
+            downloads: Downloads::default(),
         };
         core.restore_outbox()?;
         tokio::spawn(core.run(command_rx, socket_events, internal_rx));
@@ -398,6 +412,12 @@ impl Engine {
         self.command(Command::LoadOlder(chat_id));
     }
 
+    /// Fetches an attachment into the disk cache, retrying while the Mac
+    /// hasn't got it yet. The message changes once the file is there.
+    pub fn download(&self, attachment_guid: &str) {
+        self.command(Command::Download(attachment_guid.to_owned()));
+    }
+
     /// What the user is looking at: incoming messages there are marked
     /// read and don't notify while the window is focused.
     pub fn view(&self, chat_id: Option<i64>, focused: bool) {
@@ -457,6 +477,8 @@ struct Core {
     focused: bool,
     fetching_chats: HashSet<String>,
     loading_history: HashSet<i64>,
+    attachments_dir: PathBuf,
+    downloads: Downloads,
 }
 
 impl Core {
@@ -544,6 +566,7 @@ impl Core {
             Command::MarkUnread(chat_id) => self.mark_unread(chat_id),
             Command::Composing { chat_guid, active } => self.composing(chat_guid, active),
             Command::LoadOlder(chat_id) => self.load_older(chat_id),
+            Command::Download(guid) => self.download(guid),
             Command::View { chat_id, focused } => {
                 let was_focused = self.focused;
                 self.viewing = chat_id;
@@ -864,6 +887,79 @@ impl Core {
                 result,
             });
         });
+    }
+
+    fn download(&mut self, guid: String) {
+        if !self.downloads.begin(&guid) {
+            return;
+        }
+        self.fetch_attachment(guid);
+    }
+
+    fn fetch_attachment(&mut self, guid: String) {
+        let attachment = match self.store.attachment(&guid) {
+            Ok(Some(a)) => a,
+            Ok(None) => return self.downloads.finished(&guid),
+            Err(e) => {
+                tracing::warn!("reading an attachment: {e}");
+                return self.downloads.finished(&guid);
+            }
+        };
+        if attachment
+            .local_path
+            .as_deref()
+            .is_some_and(|p| std::path::Path::new(p).exists())
+        {
+            return self.downloads.finished(&guid);
+        }
+        let path = self.attachments_dir.join(downloads::file_name(&attachment));
+        let api = self.api.clone();
+        let tx = self.internal.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let bytes = api
+                    .download_attachment(&guid, Default::default())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if let Some(dir) = path.parent() {
+                    tokio::fs::create_dir_all(dir)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                // Whole files only: a crash mid-write leaves no file behind
+                // under the final name.
+                let part = path.with_extension("part");
+                tokio::fs::write(&part, &bytes)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                tokio::fs::rename(&part, &path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(path)
+            }
+            .await;
+            let _ = tx.send(Internal::Downloaded { guid, result });
+        });
+    }
+
+    fn on_downloaded(&mut self, guid: String, result: Result<PathBuf, String>) {
+        match result {
+            Ok(path) => {
+                self.downloads.finished(&guid);
+                let path = path.to_string_lossy();
+                if let Some(changes) =
+                    self.report("attachment", self.store.set_attachment_file(&guid, &path))
+                {
+                    self.after_apply(changes, i64::MAX);
+                }
+            }
+            Err(e) => {
+                let retry =
+                    self.downloads
+                        .failed(&guid, Instant::now(), self.timings.download_retry);
+                tracing::debug!("downloading an attachment (retry: {retry}): {e}");
+            }
+        }
     }
 
     // Sync.
@@ -1294,6 +1390,7 @@ impl Core {
                     Err(e) => tracing::warn!("fetching a chat: {e}"),
                 }
             }
+            Internal::Downloaded { guid, result } => self.on_downloaded(guid, result),
             Internal::History {
                 chat_id,
                 chat_guid,
@@ -1415,6 +1512,10 @@ impl Core {
 
     fn on_tick(&mut self) {
         let now = Instant::now();
+
+        for guid in self.downloads.due(now) {
+            self.fetch_attachment(guid);
+        }
 
         let expired: Vec<i64> = self
             .typing_in
