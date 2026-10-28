@@ -439,10 +439,20 @@ impl Render for Conversation {
             opening: self.opening.clone(),
         });
         div()
+            .id("conversation")
             .size_full()
             .flex()
             .flex_col()
             .bg(colors.window)
+            // Files dropped anywhere on the conversation wait in the
+            // composer.
+            .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(colors.sidebar_hover))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                if let Some(composer) = this.composer.clone() {
+                    composer.update(cx, |c, cx| c.stage(paths.paths().to_vec(), cx));
+                    Composer::focus(&composer, window, cx);
+                }
+            }))
             .child(self.header(window, cx))
             .child(
                 list(self.list.clone(), move |ix, window, cx| {

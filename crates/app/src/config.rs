@@ -65,6 +65,14 @@ pub fn attachments_dir(server_url: &str) -> PathBuf {
         .join("attachments")
 }
 
+/// Pasted images, kept until their send is done with them.
+pub fn outgoing_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(APP_ID)
+        .join("outgoing")
+}
+
 /// A stable name for a server address (FNV-1a: the same across runs and
 /// Rust versions).
 fn server_key(server_url: &str) -> String {
