@@ -162,6 +162,12 @@ pub enum EngineEvent {
     ChatRead {
         chat_id: i64,
     },
+    /// A send could not be stored, so it was not sent; the text goes back
+    /// to the composer.
+    NotQueued {
+        chat_guid: String,
+        text: Option<String>,
+    },
     /// The server announced a new address.
     ServerMoved {
         url: String,
@@ -573,6 +579,10 @@ impl Core {
     fn queue_outgoing(&mut self, message: OutgoingMessage, outbound: Outbound) {
         let payload = serde_json::to_string(&outbound).unwrap_or_default();
         let Some((changes, _)) = self.report("send", self.store.insert_outgoing(&message)) else {
+            self.emit(EngineEvent::NotQueued {
+                chat_guid: message.chat_guid,
+                text: message.text,
+            });
             return;
         };
         self.report(

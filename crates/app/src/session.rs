@@ -14,8 +14,15 @@ use std::sync::Arc;
 pub enum SessionEvent {
     Changed(Arc<Changes>),
     ContactsChanged,
-    Typing { chat_id: i64 },
+    Typing {
+        chat_id: i64,
+    },
     Status,
+    /// A send wasn't stored, so it wasn't sent.
+    NotQueued {
+        chat_guid: String,
+        text: Option<String>,
+    },
 }
 
 pub struct Session {
@@ -81,6 +88,9 @@ impl Session {
             }
             // Desktop notifications come with Phase 4.
             EngineEvent::Notify(_) | EngineEvent::ChatRead { .. } => {}
+            EngineEvent::NotQueued { chat_guid, text } => {
+                cx.emit(SessionEvent::NotQueued { chat_guid, text });
+            }
             EngineEvent::ServerMoved { url } => {
                 tracing::info!("the server moved to {url}");
             }

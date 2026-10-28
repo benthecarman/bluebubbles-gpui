@@ -2,7 +2,7 @@
 //! send, Shift+Enter for a new line, and the round send arrow once there
 //! is something to send. Drafts are kept per chat.
 
-use crate::session::Session;
+use crate::session::{Session, SessionEvent};
 use crate::ui::people;
 use bb_core::TextMessage;
 use bb_ui::{ActiveTheme, Icon, icon};
@@ -20,6 +20,7 @@ pub struct Composer {
     input: Entity<TextareaState>,
     empty: bool,
     save_draft: Option<Task<()>>,
+    error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -56,6 +57,17 @@ impl Composer {
                         _ => {}
                     }
                 }),
+                cx.subscribe_in(
+                    &session,
+                    window,
+                    |this, _, event: &SessionEvent, window, cx| {
+                        if let SessionEvent::NotQueued { chat_guid, text } = event
+                            && *chat_guid == this.chat_guid
+                        {
+                            this.not_queued(text.clone(), window, cx);
+                        }
+                    },
+                ),
             ];
         Self {
             session,
@@ -65,6 +77,7 @@ impl Composer {
             input,
             empty: draft.trim().is_empty(),
             save_draft: None,
+            error: None,
             _subscriptions: subscriptions,
         }
     }
@@ -76,6 +89,19 @@ impl Composer {
 
     fn text(&self, cx: &App) -> String {
         self.input.read(cx).value().to_string()
+    }
+
+    /// The message never left: give its text back, unless something new
+    /// has been typed since.
+    fn not_queued(&mut self, text: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = text
+            && self.text(cx).trim().is_empty()
+        {
+            self.input.update(cx, |s, cx| s.set_value(text, window, cx));
+            self.changed(cx);
+        }
+        self.error = Some("The message couldn't be saved, so it wasn't sent.".into());
+        cx.notify();
     }
 
     fn changed(&mut self, cx: &mut Context<Self>) {
@@ -118,6 +144,7 @@ impl Composer {
             ..Default::default()
         });
         self.input.update(cx, |s, cx| s.set_value("", window, cx));
+        self.error = None;
         self.empty = true;
         self.save_draft = None;
         let store = self.session.read(cx).store.clone();
@@ -145,10 +172,20 @@ impl Render for Composer {
             .pt(px(6.))
             .pb(px(12.))
             .flex()
-            .items_end()
+            .flex_col()
+            .gap(px(4.))
+            .when_some(self.error.clone(), |el, error| {
+                el.child(
+                    div()
+                        .px(px(8.))
+                        .text_size(m.small())
+                        .text_color(colors.error)
+                        .child(error),
+                )
+            })
             .child(
                 div()
-                    .flex_1()
+                    .w_full()
                     .min_h(px(30.))
                     .pl(px(6.))
                     .pr(px(3.))
