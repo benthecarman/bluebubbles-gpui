@@ -42,17 +42,22 @@ typing indicators and server-side read marks are off, and replies go
 out as plain messages. Receipts and incoming typing still show when the
 server reports them.
 
-## Phase 3: Rich messages
+## Phase 3: Rich messages (done)
 
 - Attachments: images inline (HEIC as JPEG), files, audio and video as
   file cards that open externally; paste and drag-and-drop to send.
 - Tapbacks: badges on bubbles, emoji tapbacks shown; the picker on
-  right-click or double-click only when the server has the Private API.
+  right-click only when the server has the Private API.
 - Replies: quoted bubble always; reply from the context menu only with
   the Private API.
-- Edits and unsends shown; edit and unsend own messages when the
-  server's Private API allows.
-- Link previews from the server's rich-link payloads.
+- Edits and unsends shown.
+- Link previews from the server's rich-link payloads, with the picture
+  the sender attached; links in text are clickable.
+
+Left for later: editing and unsending your own messages (they need the
+Private API, which Ben's server doesn't run), a double-click tapback
+shortcut, video thumbnails (no in-process decoder, by design), and
+streaming large downloads to disk instead of through memory.
 
 ## Phase 4: Desktop integration
 
