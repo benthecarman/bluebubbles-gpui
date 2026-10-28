@@ -57,10 +57,13 @@ fn circle(face: &Face, size: Pixels, cx: &App) -> AnyElement {
         .items_center()
         .justify_center();
     match face {
+        // The image is rounded itself: overflow_hidden clips to a
+        // rectangle, not the circle.
         Face::Image(image) => base
             .child(
                 img(ImageSource::Image(image.clone()))
                     .size_full()
+                    .rounded_full()
                     .object_fit(ObjectFit::Cover),
             )
             .into_any_element(),
