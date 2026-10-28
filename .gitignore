@@ -1,0 +1,9 @@
+/target
+/target-deb
+/dist
+/result
+.direnv
+__pycache__/
+# Upstream BlueBubbles sources, cloned as read-only reference.
+/third_party/bluebubbles-app
+/third_party/bluebubbles-server
