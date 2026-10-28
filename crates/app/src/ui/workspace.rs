@@ -82,6 +82,13 @@ impl Workspace {
         .detach();
     }
 
+    /// Opens `chat_id` once signed in, as for a clicked notification.
+    pub fn open_chat(&mut self, chat_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Screen::Main(main) = &self.screen {
+            main.update(cx, |main, cx| main.open(chat_id, window, cx));
+        }
+    }
+
     fn show_login(
         &mut self,
         url: Option<String>,

@@ -20,6 +20,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 dirs = "6"
 futures.workspace = true
 gpui-kit.workspace = true
+# For its activation-token patch; third_party/README.md.
+gpui-pre-linux = "0.3.8"
 image.workspace = true
 oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
 serde.workspace = true
@@ -29,6 +31,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-segmentation = "1"
 url.workspace = true
+zbus = { version = "5", default-features = false, features = ["async-io"] }
 
 [package.metadata.deb]
 name = "bluebubbles-gpui"

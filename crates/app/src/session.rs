@@ -2,10 +2,13 @@
 //! views, and the engine's events re-emitted to views as GPUI events.
 
 use crate::config;
+use crate::notify::{Notifier, Response};
 use crate::runtime::Runtime;
+use crate::shell;
 use bb_api::ServerConfig;
 use bb_core::{Engine, EngineConfig, EngineEvent, Region, Status};
 use bb_store::{Changes, Store};
+use futures::StreamExt;
 use gpui_kit::*;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -33,7 +36,9 @@ pub struct Session {
     pub region: Region,
     pub status: Status,
     typing: HashSet<i64>,
+    notifier: Notifier,
     _events: Task<()>,
+    _responses: Task<()>,
 }
 
 impl EventEmitter<SessionEvent> for Session {}
@@ -65,13 +70,27 @@ impl Session {
                     }
                 }
             });
+            let (notifier, mut responses) =
+                Notifier::start(store.clone(), region, cx.background_executor());
+            let responses = cx.spawn(async move |this: WeakEntity<Session>, cx| {
+                while let Some(response) = responses.next().await {
+                    if this
+                        .update(cx, |this, cx| this.on_response(response, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
             Self {
                 engine,
                 store,
                 region,
                 status,
                 typing: HashSet::new(),
+                notifier,
                 _events: pump,
+                _responses: responses,
             }
         }))
     }
@@ -88,8 +107,8 @@ impl Session {
                 }
                 cx.emit(SessionEvent::Typing { chat_id });
             }
-            // Desktop notifications come with Phase 4.
-            EngineEvent::Notify(_) | EngineEvent::ChatRead { .. } => {}
+            EngineEvent::Notify(n) => self.notifier.show(n, cx.background_executor()),
+            EngineEvent::ChatRead { chat_id } => self.notifier.withdraw(chat_id),
             EngineEvent::NotQueued { chat_guid, text } => {
                 cx.emit(SessionEvent::NotQueued { chat_guid, text });
             }
@@ -101,6 +120,18 @@ impl Session {
                 cx.emit(SessionEvent::Status);
                 cx.notify();
             }
+        }
+    }
+
+    fn on_response(&mut self, response: Response, cx: &mut Context<Self>) {
+        match response {
+            // Deferred: opening the chat reads this session, which is
+            // being updated here.
+            Response::Open {
+                chat_id,
+                activation_token,
+            } => cx.defer(move |cx| shell::show(Some(chat_id), activation_token, cx)),
+            Response::MarkRead { chat_id } => self.engine.mark_read(chat_id),
         }
     }
 
