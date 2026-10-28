@@ -38,9 +38,10 @@ icons! {
     People => "people",
     Alert => "alert",
     Plus => "plus",
-    Close => "xmark",
-    Minimize => "minus",
-    Maximize => "maximize",
+    WindowClose => "window-close",
+    WindowMinimize => "window-minimize",
+    WindowMaximize => "window-maximize",
+    WindowRestore => "window-restore",
     ChevronDown => "chevron-down",
     Offline => "wifi-off",
 }

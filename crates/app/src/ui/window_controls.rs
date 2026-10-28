@@ -1,9 +1,8 @@
 //! The window's own title bar: Linux compositors (GNOME on Wayland in
-//! particular) draw none for us, so the sidebar's top edge is the title
-//! bar and carries Messages' three window buttons.
+//! particular) draw none for us, so the top edges of the sidebar and the
+//! conversation are the title bar and carry GNOME's window buttons.
 
-use bb_ui::{Icon, icon};
-use gpui_kit::prelude::FluentBuilder;
+use bb_ui::{ActiveTheme, Icon, icon};
 use gpui_kit::*;
 
 /// Which buttons the session supports: Hyprland has no minimize, and
@@ -38,59 +37,78 @@ impl Policy {
     }
 }
 
-const RED: u32 = 0xFF5F57;
-const YELLOW: u32 = 0xFEBC2E;
-const GREEN: u32 = 0x28C840;
-const SIZE: f32 = 12.;
+/// Which end of the title bar a group of buttons sits at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
 
-/// Close, minimize and zoom, as coloured circles whose glyphs show while
-/// the pointer is over the group.
-pub fn traffic_lights(window: &Window) -> impl IntoElement {
+/// The buttons for one side, in the order GNOME's `button-layout` setting
+/// gives (minimize, maximize and close on the right unless changed), drawn
+/// as libadwaita draws them. `None` when that side has none.
+pub fn buttons(side: Side, window: &Window, cx: &App) -> Option<impl IntoElement + use<>> {
+    let layout = cx
+        .button_layout()
+        .unwrap_or_else(WindowButtonLayout::linux_default);
+    let slots = match side {
+        Side::Left => layout.left,
+        Side::Right => layout.right,
+    };
     let policy = Policy::current();
     let supported = window.window_controls();
-    let active = window.is_window_active();
-    let light = |id: &'static str, color: u32, glyph: Icon| {
-        let fill: Hsla = if active {
-            rgb(color).into()
-        } else {
-            hsla(0., 0., 0.5, 0.35)
-        };
-        div()
-            .id(id)
-            .size(px(SIZE))
-            .rounded_full()
-            .bg(fill)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                icon(glyph, px(8.))
-                    .text_color(hsla(0., 0., 0., 0.55))
-                    .invisible()
-                    .group_hover("traffic-lights", |s| s.visible()),
-            )
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    let shown: Vec<WindowButton> = slots
+        .into_iter()
+        .flatten()
+        .filter(|b| match b {
+            WindowButton::Minimize => policy.minimize && supported.minimize,
+            WindowButton::Maximize => policy.maximize && supported.maximize,
+            WindowButton::Close => true,
+        })
+        .collect();
+    if shown.is_empty() {
+        return None;
+    }
+    let colors = *cx.colors();
+    let fg = if window.is_window_active() {
+        colors.text
+    } else {
+        colors.text.opacity(0.5)
     };
-    div()
-        .group("traffic-lights")
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .child(
-            light("window-close", RED, Icon::Close).on_click(|_, window, _| window.remove_window()),
-        )
-        .when(policy.minimize && supported.minimize, |row| {
-            row.child(
-                light("window-minimize", YELLOW, Icon::Minimize)
-                    .on_click(|_, window, _| window.minimize_window()),
-            )
-        })
-        .when(policy.maximize && supported.maximize, |row| {
-            row.child(
-                light("window-zoom", GREEN, Icon::Maximize)
-                    .on_click(|_, window, _| window.zoom_window()),
-            )
-        })
+    let maximized = window.is_maximized();
+    Some(
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(12.))
+            .children(shown.into_iter().map(move |button| {
+                let glyph = match button {
+                    WindowButton::Minimize => Icon::WindowMinimize,
+                    WindowButton::Maximize if maximized => Icon::WindowRestore,
+                    WindowButton::Maximize => Icon::WindowMaximize,
+                    WindowButton::Close => Icon::WindowClose,
+                };
+                not_title_bar(
+                    div()
+                        .id(button.id())
+                        .size(px(24.))
+                        .rounded_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(colors.text.opacity(0.1))
+                        .hover(|s| s.bg(colors.text.opacity(0.15)))
+                        .active(|s| s.bg(colors.text.opacity(0.3))),
+                )
+                .child(icon(glyph, px(16.)).text_color(fg))
+                .on_click(move |_, window, _| match button {
+                    WindowButton::Minimize => window.minimize_window(),
+                    WindowButton::Maximize => window.zoom_window(),
+                    WindowButton::Close => window.remove_window(),
+                })
+            })),
+    )
 }
 
 /// Makes an element a title bar: drag to move, double-click to maximize,

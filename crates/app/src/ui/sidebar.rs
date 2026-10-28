@@ -3,7 +3,8 @@
 
 use crate::session::{Session, SessionEvent};
 use crate::ui::people::{self, Photos};
-use crate::ui::{time, window_controls};
+use crate::ui::time;
+use crate::ui::window_controls::{self, Side};
 use bb_core::{Connection, Names};
 use bb_store::ChatRow;
 use bb_ui::{ActiveTheme, Avatar, Icon, icon};
@@ -309,10 +310,11 @@ impl Render for Sidebar {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .justify_between()
-                        .px(px(18.)),
+                        .gap(px(8.))
+                        .px(px(12.)),
                 )
-                .child(window_controls::traffic_lights(window))
+                .children(window_controls::buttons(Side::Left, window, cx))
+                .child(div().flex_1())
                 .child(
                     window_controls::not_title_bar(
                         div()

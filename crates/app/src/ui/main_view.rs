@@ -3,7 +3,7 @@
 use crate::session::{Session, SessionEvent};
 use crate::ui::conversation::Conversation;
 use crate::ui::sidebar::{Sidebar, SidebarEvent};
-use crate::ui::window_controls;
+use crate::ui::window_controls::{self, Side};
 use bb_ui::ActiveTheme;
 use bb_ui::theme::SIDEBAR_WIDTH;
 use gpui_kit::*;
@@ -109,6 +109,11 @@ impl Render for MainView {
         let detail = match &self.conversation {
             Some(c) => c.clone().into_any_element(),
             None => window_controls::title_bar(div().id("empty-title").size_full())
+                .relative()
+                .children(
+                    window_controls::buttons(Side::Right, window, cx)
+                        .map(|b| div().absolute().top(px(14.)).right(px(12.)).child(b)),
+                )
                 .flex()
                 .items_center()
                 .justify_center()
@@ -121,7 +126,6 @@ impl Render for MainView {
                 })
                 .into_any_element(),
         };
-        let _ = window;
         div()
             .size_full()
             .flex()

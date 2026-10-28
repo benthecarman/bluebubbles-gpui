@@ -4,7 +4,7 @@
 use crate::config::Config;
 use crate::credentials;
 use crate::runtime::Runtime;
-use crate::ui::window_controls;
+use crate::ui::window_controls::{self, Side};
 use bb_api::{ApiError, Client, ServerConfig, parse_server_url};
 use bb_ui::ActiveTheme;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -176,9 +176,12 @@ impl Render for Login {
                         .w_full()
                         .flex()
                         .items_center()
-                        .px(px(16.)),
+                        .gap(px(8.))
+                        .px(px(12.)),
                 )
-                .child(window_controls::traffic_lights(window)),
+                .children(window_controls::buttons(Side::Left, window, cx))
+                .child(div().flex_1())
+                .children(window_controls::buttons(Side::Right, window, cx)),
             )
             .child(
                 div().flex_1().flex().items_center().justify_center().child(

@@ -3,8 +3,9 @@
 use crate::session::{Session, SessionEvent};
 use crate::ui::composer::Composer;
 use crate::ui::people::{self, Photos};
+use crate::ui::time;
 use crate::ui::transcript::{self, Bubble as Item_, Item, Key, Kind, Receipt, Transcript};
-use crate::ui::{time, window_controls};
+use crate::ui::window_controls::{self, Side};
 use bb_core::Names;
 use bb_store::{ChatRow, MessageRow};
 use bb_ui::theme::{GROUP_GAP, GROUPED_GAP, TAIL};
@@ -231,7 +232,7 @@ impl Conversation {
         }
     }
 
-    fn header(&self, cx: &App) -> impl IntoElement {
+    fn header(&self, window: &Window, cx: &App) -> impl IntoElement {
         let colors = *cx.colors();
         let m = cx.theme().metrics();
         let (title, faces) = match &self.chat {
@@ -249,6 +250,7 @@ impl Conversation {
         window_controls::title_bar(
             div()
                 .id("conversation-title")
+                .relative()
                 .h(px(64.))
                 .flex_none()
                 .flex()
@@ -270,6 +272,16 @@ impl Conversation {
                 .child(title)
                 .child(icon(Icon::ChevronDown, px(9.)).text_color(colors.text_secondary)),
         )
+        .children(window_controls::buttons(Side::Right, window, cx).map(|b| {
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right(px(12.))
+                .flex()
+                .items_center()
+                .child(b)
+        }))
     }
 }
 
@@ -288,7 +300,7 @@ impl Render for Conversation {
             .flex()
             .flex_col()
             .bg(colors.window)
-            .child(self.header(cx))
+            .child(self.header(window, cx))
             .child(
                 list(self.list.clone(), move |ix, window, cx| {
                     let Some(item) = transcript.items.get(ix) else {

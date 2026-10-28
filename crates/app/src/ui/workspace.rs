@@ -29,6 +29,8 @@ impl Workspace {
             Theme::sync_system(window, cx);
         });
         Theme::sync_system(window, cx);
+        // GNOME's button-layout setting moves the window buttons.
+        let buttons = window.observe_button_layout_changed(|window, _| window.refresh());
         let appearance_setting = std::env::var("BB_APPEARANCE")
             .ok()
             .or(Config::load().appearance);
@@ -40,7 +42,7 @@ impl Workspace {
         Theme::set_preference(preference, cx);
         let mut this = Self {
             screen: Screen::Starting,
-            _subscriptions: vec![appearance],
+            _subscriptions: vec![appearance, buttons],
         };
         this.start(window, cx);
         this
