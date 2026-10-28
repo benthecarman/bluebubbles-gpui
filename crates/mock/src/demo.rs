@@ -15,6 +15,8 @@ pub const JORDAN: &str = "+15550107890";
 pub const PRIYA: &str = "priya@example.com";
 
 const PHOTO: &[u8] = include_bytes!("../../../assets/icons/bluebubbles-512.png");
+const PREVIEW: &[u8] = include_bytes!("../../../assets/icons/bluebubbles-256.png");
+const PDF: &[u8] = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
 
 pub fn seed_demo(server: &MockServer) {
     let now = now_ms();
@@ -84,6 +86,12 @@ pub fn seed_demo(server: &MockServer) {
     photo.width = Some(512);
     photo.height = Some(512);
     server.update(&trip_ids[5], true, |m| m.attachments = vec![photo]);
+    let itinerary =
+        server
+            .shared
+            .lock()
+            .attachment("Itinerary.pdf", "application/pdf", PDF.to_vec());
+    server.update(&trip_ids[4], true, |m| m.attachments = vec![itinerary]);
     group_event(server, trip, SAM, at(DAY + 4 * HOUR), "Weekend Trip 🏕️");
     tapback(
         server,
@@ -141,6 +149,29 @@ pub fn seed_demo(server: &MockServer) {
         (me, "Watching it tonight", at(4 * HOUR - 3 * MIN)),
     ];
     let alex_ids = insert_all(server, &alex, &mut seq);
+    // The link as Messages sends it: a rich-link balloon, with the page's
+    // picture attached by the sender's phone.
+    let preview = server.shared.lock().attachment(
+        "4B2A.pluginPayloadAttachment",
+        "application/octet-stream",
+        PREVIEW.to_vec(),
+    );
+    server.update(&alex_ids[3], true, |m| {
+        m.balloon_bundle_id = Some("com.apple.messages.URLBalloonProvider".into());
+        m.payload_data = Some(serde_json::json!([{
+            "$archiver": "NSKeyedArchiver",
+            "$top": {"root": {"UID": 1}},
+            "$objects": [
+                "$null",
+                {"richLinkMetadata": {"UID": 2}, "richLinkIsPlaceholder": false},
+                {"title": {"UID": 3}, "siteName": {"UID": 4}, "URL": {"UID": 5}},
+                "Starfall — Official Trailer",
+                "Example Films",
+                {"NS.relative": "https://example.com/trailer"}
+            ]
+        }]));
+        m.attachments = vec![preview];
+    });
     server.update(&alex_ids[4], true, |m| {
         m.thread_originator_guid = Some(alex_ids[0].clone());
         m.thread_originator_part = Some("0:0:27".into());
