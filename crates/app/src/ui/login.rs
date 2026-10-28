@@ -34,7 +34,7 @@ impl Login {
         cx: &mut Context<Self>,
     ) -> Self {
         let url_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("https://example.ngrok.app"));
+            cx.new(|cx| InputState::new(window, cx).placeholder("mac-mini:1234 or https://…"));
         if let Some(url) = url {
             url_input.update(cx, |s, cx| s.set_value(url, window, cx));
         }
@@ -131,7 +131,7 @@ pub fn explain(e: &ApiError) -> String {
         ApiError::BadUrl(_) => "That doesn't look like a server address.".into(),
         ApiError::Timeout => "The server took too long to answer. Is it running?".into(),
         ApiError::Network(_) => {
-            "Couldn't reach the server. Check the address, and that the server is running.".into()
+            "Couldn't reach the server. Check the address, that the server is running, and that Tailscale or your tunnel is connected.".into()
         }
         ApiError::NotFound => "That address isn't a BlueBubbles server.".into(),
         other => other.to_string(),

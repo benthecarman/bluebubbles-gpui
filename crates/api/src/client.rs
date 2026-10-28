@@ -57,29 +57,46 @@ impl ServerConfig {
     }
 }
 
-/// Parses what a user types as a server address: adds a scheme when it is
-/// missing (https for known tunnels, http otherwise) and drops a trailing
-/// slash.
+/// Tunnel services, which serve https.
+const TUNNELS: &[&str] = &[
+    "ngrok.io",
+    "ngrok-free.app",
+    "ngrok.app",
+    "trycloudflare.com",
+    "zrok.io",
+];
+
+/// The BlueBubbles server's listening port unless changed.
+pub const DEFAULT_PORT: u16 = 1234;
+
+/// Parses what a user types as a server address and drops a trailing
+/// slash. Without a scheme, known tunnels get https and anything else (a
+/// LAN or Tailscale address) gets http and, unless given, the server's
+/// default port.
 pub fn parse_server_url(input: &str) -> Result<Url, ApiError> {
     let trimmed = input.trim().trim_matches('"').trim_end_matches('/');
     if trimmed.is_empty() {
         return Err(ApiError::BadUrl("enter the server's address".into()));
     }
-    let with_scheme = if trimmed.contains("://") {
-        trimmed.to_owned()
+    let url = if trimmed.contains("://") {
+        Url::parse(trimmed)
+    } else if TUNNELS.iter().any(|t| trimmed.contains(t)) {
+        Url::parse(&format!("https://{trimmed}"))
     } else {
-        let tunnel = [
-            "ngrok.io",
-            "ngrok-free.app",
-            "ngrok.app",
-            "trycloudflare.com",
-            "zrok.io",
-        ]
-        .iter()
-        .any(|t| trimmed.contains(t));
-        format!("{}://{trimmed}", if tunnel { "https" } else { "http" })
+        // A bare IPv6 address, such as a Tailscale one, needs brackets.
+        let host = if trimmed.parse::<std::net::Ipv6Addr>().is_ok() {
+            format!("[{trimmed}]")
+        } else {
+            trimmed.to_owned()
+        };
+        Url::parse(&format!("http://{host}")).map(|mut url| {
+            if url.port().is_none() {
+                let _ = url.set_port(Some(DEFAULT_PORT));
+            }
+            url
+        })
     };
-    let url = Url::parse(&with_scheme).map_err(|e| ApiError::BadUrl(e.to_string()))?;
+    let url = url.map_err(|e| ApiError::BadUrl(e.to_string()))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none_or(str::is_empty) {
         return Err(ApiError::BadUrl(
             "use an http:// or https:// address".into(),
@@ -702,6 +719,32 @@ mod tests {
             "http://192.168.1.5:1234/"
         );
         assert!(parse_server_url("ftp://x").is_err());
+        // Tailscale: IPs, MagicDNS names and bare IPv6, over plain http.
+        let parsed = |s| parse_server_url(s).unwrap().to_string();
+        assert_eq!(parsed("100.101.102.103"), "http://100.101.102.103:1234/");
+        assert_eq!(
+            parsed("100.101.102.103:1234"),
+            "http://100.101.102.103:1234/"
+        );
+        assert_eq!(parsed("mac-mini"), "http://mac-mini:1234/");
+        assert_eq!(
+            parsed("mac-mini.tail1a2b3c.ts.net:1234"),
+            "http://mac-mini.tail1a2b3c.ts.net:1234/"
+        );
+        assert_eq!(
+            parsed("fd7a:115c:a1e0::1"),
+            "http://[fd7a:115c:a1e0::1]:1234/"
+        );
+        assert_eq!(
+            parsed("[fd7a:115c:a1e0::1]:1234"),
+            "http://[fd7a:115c:a1e0::1]:1234/"
+        );
+        // A typed scheme keeps its own port.
+        assert_eq!(parsed("http://mac-mini"), "http://mac-mini/");
+        assert_eq!(
+            parsed("https://mac-mini.tail1a2b3c.ts.net"),
+            "https://mac-mini.tail1a2b3c.ts.net/"
+        );
         assert!(parse_server_url("").is_err());
     }
 
