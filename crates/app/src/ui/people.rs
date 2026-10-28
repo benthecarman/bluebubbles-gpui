@@ -1,16 +1,16 @@
-//! Faces for people and chats: contact photos, initials, or the person
-//! glyph.
+//! Faces for people and chats: contact photos, the photo someone shares
+//! through iMessage, initials, or the person glyph.
 
-use bb_core::Names;
+use bb_core::{Names, Photo};
 use bb_store::{ChatRow, Store};
 use bb_ui::Face;
 use gpui_kit::{Image, ImageFormat};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Contact photos by contact id.
+/// Photos by where they come from.
 #[derive(Default, Clone)]
-pub struct Photos(HashMap<String, Arc<Image>>);
+pub struct Photos(HashMap<Photo, Arc<Image>>);
 
 impl Photos {
     /// Loads the photos of `addresses` not loaded yet. Runs off the UI
@@ -23,19 +23,17 @@ impl Photos {
     ) -> Photos {
         let mut out = self.clone();
         for address in addresses {
-            let Some(contact) = names.contact(address) else {
+            let Some(photo) = names.photo(address) else {
                 continue;
             };
-            if !contact.has_avatar || out.0.contains_key(&contact.id) {
+            if out.0.contains_key(&photo) {
                 continue;
             }
-            if let Ok(Some(bytes)) = store.contact_avatar(&contact.id)
+            if let Some(bytes) = photo.load(store)
                 && let Some(format) = format_of(&bytes)
             {
-                out.0.insert(
-                    contact.id.clone(),
-                    Arc::new(Image::from_bytes(format, bytes)),
-                );
+                out.0
+                    .insert(photo, Arc::new(Image::from_bytes(format, bytes)));
             }
         }
         out
@@ -67,8 +65,8 @@ pub fn format_of(bytes: &[u8]) -> Option<ImageFormat> {
 }
 
 pub fn face(names: &Names, photos: &Photos, address: &str) -> Face {
-    if let Some(contact) = names.contact(address)
-        && let Some(image) = photos.0.get(&contact.id)
+    if let Some(photo) = names.photo(address)
+        && let Some(image) = photos.0.get(&photo)
     {
         return Face::Image(image.clone());
     }

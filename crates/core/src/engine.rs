@@ -1050,6 +1050,7 @@ impl Core {
             notify_since: (self.last_online - CLOCK_SLACK).max(now - window),
             macos: self.info.as_ref().and_then(ServerInfo::macos),
             contacts_every: self.timings.contacts_every,
+            private_api: self.private_api(),
         };
         let tx = self.internal.clone();
         let api = self.api.clone();
@@ -1061,6 +1062,7 @@ impl Core {
                 let info = api.server_info().await;
                 if let Ok(info) = &info {
                     job.macos = info.macos();
+                    job.private_api = info.private_api_ready();
                 }
                 let _ = tx.send(Internal::Info(info));
             }

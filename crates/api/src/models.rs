@@ -218,6 +218,16 @@ pub struct Contact {
     pub avatar: Option<String>,
 }
 
+/// What someone shares with Name and Photo Sharing, from
+/// `GET /icloud/contact?address=` (Private API only).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SharedCard {
+    pub name: Option<String>,
+    /// Base64 image data.
+    pub avatar: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContactAddress {

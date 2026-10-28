@@ -72,6 +72,11 @@ pub(crate) struct State {
     pub contacts: Vec<Contact>,
     /// Requests for contact photos fail.
     pub fail_avatars: bool,
+    /// Photos people share with Name and Photo Sharing, by address as
+    /// the server spells it.
+    pub shared_photos: HashMap<String, Vec<u8>>,
+    /// Addresses asked for at `/icloud/contact`, in order.
+    pub shared_asked: Vec<String>,
     pub send: SendBehaviour,
     /// Every send is refused with this reason.
     pub refuse_sends: Option<String>,
@@ -137,6 +142,8 @@ impl MockServer {
                 attachment_data: HashMap::new(),
                 contacts: Vec::new(),
                 fail_avatars: false,
+                shared_photos: HashMap::new(),
+                shared_asked: Vec::new(),
                 send: SendBehaviour::default(),
                 refuse_sends: None,
                 requests: Vec::new(),
@@ -259,6 +266,19 @@ impl MockServer {
         {
             c.avatar = Some(base64(image));
         }
+    }
+
+    /// `address` shares `image` through iMessage's Name and Photo Sharing.
+    pub fn set_shared_photo(&self, address: &str, image: &[u8]) {
+        self.shared
+            .lock()
+            .shared_photos
+            .insert(address.to_owned(), image.to_vec());
+    }
+
+    /// Addresses the client asked for shared photos, in order.
+    pub fn shared_asked(&self) -> Vec<String> {
+        self.shared.lock().shared_asked.clone()
     }
 
     pub fn fail_avatars(&self, fail: bool) {

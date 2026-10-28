@@ -145,14 +145,10 @@ impl Notifier {
     }
 }
 
-/// The contact photo of `address`, scaled for a notification.
+/// The photo of `address`, scaled for a notification.
 fn picture(store: &Store, region: Region, address: &str) -> Option<Picture> {
     let names = Names::load(store, region, [address]).ok()?;
-    let contact = names.contact(address)?;
-    if !contact.has_avatar {
-        return None;
-    }
-    let bytes = store.contact_avatar(&contact.id).ok()??;
+    let bytes = names.photo(address)?.load(store)?;
     let image = image::load_from_memory(&bytes)
         .ok()?
         .thumbnail(PICTURE, PICTURE)

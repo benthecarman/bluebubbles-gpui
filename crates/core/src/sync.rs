@@ -22,6 +22,10 @@ pub(crate) const AVATARS_KEY: &str = "sync.avatars_at";
 const AVATARS_TRIED_KEY: &str = "sync.avatars_tried_at";
 /// After a failed photo download, wait this long before asking again.
 const AVATAR_RETRY_MS: i64 = 30 * 60_000;
+/// When the Mac was last asked for photos people share through iMessage.
+const SHARED_PHOTOS_KEY: &str = "sync.shared_photos_at";
+/// Ask again for each person's shared photo after this long.
+const SHARED_RECHECK_MS: i64 = 7 * 24 * 60 * 60_000;
 
 /// 2001-01-01 in Unix ms: `where` clauses compare Apple-epoch nanoseconds.
 const APPLE_EPOCH_MS: i64 = 978_307_200_000;
@@ -44,6 +48,8 @@ pub(crate) struct Sync {
     pub notify_since: i64,
     pub macos: Option<(u32, u32)>,
     pub contacts_every: Duration,
+    /// Shared photos come from the Private API helper.
+    pub private_api: bool,
 }
 
 impl Sync {
@@ -220,21 +226,46 @@ impl Sync {
         }
         let due = now - self.store.get_i64(AVATARS_KEY)?.unwrap_or(0) >= every
             && now - self.store.get_i64(AVATARS_TRIED_KEY)?.unwrap_or(0) >= AVATAR_RETRY_MS;
+        let shared_due =
+            self.private_api && now - self.store.get_i64(SHARED_PHOTOS_KEY)?.unwrap_or(0) >= every;
         if due {
             self.store.set_i64(AVATARS_TRIED_KEY, now)?;
-            let (api, store, tx) = (self.api.clone(), self.store.clone(), self.tx.clone());
-            tokio::spawn(async move {
+        }
+        if shared_due {
+            self.store.set_i64(SHARED_PHOTOS_KEY, now)?;
+        }
+        if !due && !shared_due {
+            return Ok(());
+        }
+        let (api, store, tx, region) = (
+            self.api.clone(),
+            self.store.clone(),
+            self.tx.clone(),
+            self.region,
+        );
+        tokio::spawn(async move {
+            let mut changed = 0;
+            if due {
                 match avatars(&api, &store).await {
-                    Ok(changed) => {
+                    Ok(n) => {
                         let _ = store.set_i64(AVATARS_KEY, now_ms());
-                        if changed > 0 {
-                            let _ = tx.send(Internal::ContactsChanged);
-                        }
+                        changed += n;
                     }
                     Err(e) => tracing::warn!("contact photos: {e}"),
                 }
-            });
-        }
+            }
+            // After the contact photos, which come first, so only people
+            // without one are asked about.
+            if shared_due {
+                match shared_photos(&api, &store, region).await {
+                    Ok(n) => changed += n,
+                    Err(e) => tracing::warn!("shared photos: {e}"),
+                }
+            }
+            if changed > 0 {
+                let _ = tx.send(Internal::ContactsChanged);
+            }
+        });
         Ok(())
     }
 
@@ -292,6 +323,56 @@ async fn avatars(api: &Client, store: &Store) -> Result<usize, EngineError> {
         tracing::warn!("contact photos: {e}");
         Ok(0)
     })
+}
+
+/// Asks the Mac for the photo each person without a contact photo shares
+/// through iMessage's Name and Photo Sharing, one at a time. Returns how
+/// many photos changed.
+async fn shared_photos(api: &Client, store: &Store, region: Region) -> Result<usize, EngineError> {
+    let checked = store.shared_photos_checked()?;
+    let everyone = store.participant_addresses()?;
+    let names = crate::Names::load(store, region, everyone.iter().map(String::as_str))?;
+    let now = now_ms();
+    let mut seen = std::collections::HashSet::new();
+    let (mut asked, mut found, mut changed) = (0, 0, 0);
+    for raw in &everyone {
+        let key = address::normalize(raw, region);
+        if key.is_empty() || !seen.insert(key.clone()) {
+            continue;
+        }
+        if names.contact(raw).is_some_and(|c| c.has_avatar)
+            || checked
+                .get(&key)
+                .is_some_and(|at| now - at < SHARED_RECHECK_MS)
+        {
+            continue;
+        }
+        let card = match api.shared_card(raw).await {
+            Ok(card) => card,
+            // The helper is gone or refuses; try again next time.
+            Err(e) if asked == 0 => return Err(e.into()),
+            Err(e) => {
+                tracing::warn!("shared photos: stopped after {asked}: {e}");
+                break;
+            }
+        };
+        asked += 1;
+        let photo = match card.avatar.as_deref().and_then(decode_base64) {
+            Some(bytes) => tokio::task::spawn_blocking(move || avatar::shrink(&bytes).ok())
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        found += usize::from(photo.is_some());
+        if store.set_shared_photo(&key, photo.as_deref(), now)? {
+            changed += 1;
+        }
+    }
+    if asked > 0 {
+        tracing::info!("shared photos: {found} of {asked} people share one");
+    }
+    Ok(changed)
 }
 
 /// See [`Store::fits_history`]; a message with no chat can't be placed.

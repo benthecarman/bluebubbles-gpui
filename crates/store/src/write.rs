@@ -372,6 +372,33 @@ impl Store {
 
     /// Sets the photos of known contacts; `None` removes one. Unknown ids
     /// are skipped. Returns how many photos changed.
+    /// Records what `address` (normalized) shares; `None` is no photo.
+    /// Returns whether the photo changed.
+    pub fn set_shared_photo(
+        &self,
+        address: &str,
+        avatar: Option<&[u8]>,
+        checked_at: i64,
+    ) -> Result<bool> {
+        let mut conn = self.lock();
+        let tx = crate::write_transaction(&mut conn)?;
+        let before: Option<Option<Vec<u8>>> = tx
+            .query_row(
+                "SELECT avatar FROM shared_photos WHERE address = ?1",
+                [address],
+                |r| r.get(0),
+            )
+            .optional()?;
+        tx.execute(
+            "INSERT INTO shared_photos (address, avatar, checked_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(address) DO UPDATE SET avatar = excluded.avatar,
+                 checked_at = excluded.checked_at",
+            params![address, avatar, checked_at],
+        )?;
+        tx.commit()?;
+        Ok(before.flatten().as_deref() != avatar)
+    }
+
     pub fn set_contact_avatars(&self, avatars: &[(String, Option<Vec<u8>>)]) -> Result<usize> {
         let mut conn = self.lock();
         let tx = crate::write_transaction(&mut conn)?;

@@ -214,6 +214,39 @@ fn counts_unread_chats_that_arent_muted() {
 }
 
 #[test]
+fn keeps_shared_photos_and_says_when_they_change() {
+    let store = Store::open_in_memory().unwrap();
+    let who = "+15551234567".to_owned();
+    assert!(
+        store
+            .shared_photos_for(std::slice::from_ref(&who))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.set_shared_photo(&who, Some(b"one"), 1).unwrap());
+    assert!(!store.set_shared_photo(&who, Some(b"one"), 2).unwrap());
+    assert!(
+        store
+            .shared_photos_for(std::slice::from_ref(&who))
+            .unwrap()
+            .contains(&who)
+    );
+    assert_eq!(
+        store.shared_photo(&who).unwrap().as_deref(),
+        Some(&b"one"[..])
+    );
+    assert_eq!(store.shared_photos_checked().unwrap()[&who], 2);
+    // They stopped sharing it.
+    assert!(store.set_shared_photo(&who, None, 3).unwrap());
+    assert!(
+        store
+            .shared_photos_for(std::slice::from_ref(&who))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn pages_history_by_date_and_hides_tapbacks() {
     let (store, chat) = store_with_chat();
     let mut batch = Batch::default();

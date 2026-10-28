@@ -148,4 +148,13 @@ CREATE TABLE outbox (
     error      TEXT
 );
 "#,
+    // 2: photos people share with iMessage's Name and Photo Sharing.
+    r#"
+CREATE TABLE shared_photos (
+    -- Normalized like contact_addresses.address.
+    address    TEXT PRIMARY KEY,
+    avatar     BLOB,
+    checked_at INTEGER NOT NULL
+);
+"#,
 ];

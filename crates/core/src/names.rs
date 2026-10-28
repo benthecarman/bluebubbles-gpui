@@ -4,13 +4,32 @@
 use crate::address::{self, Region};
 use crate::tapback::{self, Association};
 use bb_store::{ChatRow, ContactRow, MessageRow, Store};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Contact names for a set of addresses, loaded in one query.
 #[derive(Debug, Clone, Default)]
 pub struct Names {
     region: Option<Region>,
     by_key: HashMap<String, ContactRow>,
+    /// Normalized addresses with a photo shared through iMessage.
+    shared: HashSet<String>,
+}
+
+/// Where someone's photo comes from: their contact card, or else what
+/// they share through iMessage's Name and Photo Sharing.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Photo {
+    Contact(String),
+    Shared(String),
+}
+
+impl Photo {
+    pub fn load(&self, store: &Store) -> Option<Vec<u8>> {
+        match self {
+            Photo::Contact(id) => store.contact_avatar(id).ok()?,
+            Photo::Shared(address) => store.shared_photo(address).ok()?,
+        }
+    }
 }
 
 impl Names {
@@ -28,6 +47,7 @@ impl Names {
         Ok(Self {
             region: Some(region),
             by_key: store.contacts_for(&keys)?,
+            shared: store.shared_photos_for(&keys)?,
         })
     }
 
@@ -48,6 +68,16 @@ impl Names {
 
     pub fn contact(&self, address: &str) -> Option<&ContactRow> {
         self.by_key.get(&address::normalize(address, self.region()))
+    }
+
+    /// The photo to show for `address`, if there is one.
+    pub fn photo(&self, address: &str) -> Option<Photo> {
+        let key = address::normalize(address, self.region());
+        match self.by_key.get(&key) {
+            Some(c) if c.has_avatar => Some(Photo::Contact(c.id.clone())),
+            _ if self.shared.contains(&key) => Some(Photo::Shared(key)),
+            _ => None,
+        }
     }
 
     /// "Alex Kim", or the formatted number or email.

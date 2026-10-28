@@ -19,7 +19,7 @@ pub use engine::{
     Connection, Engine, EngineConfig, EngineError, EngineEvent, Features, Notification, Status,
     TextMessage, Timings,
 };
-pub use names::Names;
+pub use names::{Names, Photo};
 pub use tapback::{Reaction, Tapback};
 
 pub(crate) fn now_ms() -> i64 {

@@ -34,6 +34,7 @@ pub(crate) fn router(shared: Shared) -> Router {
         .route("/api/v1/attachment/{guid}", get(attachment_get))
         .route("/api/v1/attachment/{guid}/download", get(download))
         .route("/api/v1/contact", get(contacts))
+        .route("/api/v1/icloud/contact", get(icloud_contact))
         .with_state(shared)
 }
 
@@ -675,6 +676,36 @@ async fn download(
             None,
         ),
     }
+}
+
+/// Like the server's PrivateApiMiddleware with the helper away.
+fn no_private_api() -> Response {
+    error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Please make sure you have completed the setup for the Private API, and your helper is \
+         connected!",
+        None,
+    )
+}
+
+async fn icloud_contact(
+    State(s): State<Shared>,
+    Query(q): Q,
+    method: Method,
+    uri: Uri,
+) -> Response {
+    authed!(s, q, method, uri);
+    let mut state = s.lock();
+    if !state.info.private_api_ready() {
+        return no_private_api();
+    }
+    let address = q.get("address").cloned();
+    let Some(address) = address else {
+        return ok(json!({ "name": "Me", "avatar": null }));
+    };
+    state.shared_asked.push(address.clone());
+    let avatar = state.shared_photos.get(&address).map(|b| crate::base64(b));
+    ok(json!({ "name": avatar.as_ref().map(|_| "Shared Name"), "avatar": avatar }))
 }
 
 async fn contacts(State(s): State<Shared>, Query(q): Q, method: Method, uri: Uri) -> Response {

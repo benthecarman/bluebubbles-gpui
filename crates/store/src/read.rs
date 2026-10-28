@@ -1,7 +1,7 @@
 use crate::{Result, Store, chat_service};
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChatRow {
@@ -483,6 +483,49 @@ impl Store {
             )
             .optional()?
             .flatten())
+    }
+
+    /// Of `addresses` (normalized), those with a shared photo.
+    pub fn shared_photos_for(&self, addresses: &[String]) -> Result<HashSet<String>> {
+        if addresses.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let conn = self.lock();
+        let placeholders = vec!["?"; addresses.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT address FROM shared_photos
+             WHERE avatar IS NOT NULL AND address IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(params_from_iter(addresses.iter()), |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn shared_photo(&self, address: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT avatar FROM shared_photos WHERE address = ?1",
+                [address],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// When each normalized address's shared photo was last asked for.
+    pub fn shared_photos_checked(&self) -> Result<HashMap<String, i64>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT address, checked_at FROM shared_photos")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Everyone in a chat, as the server spells their address.
+    pub fn participant_addresses(&self) -> Result<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT DISTINCT address FROM chat_participants")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Every contact address we know, normalized, with the contact's name.

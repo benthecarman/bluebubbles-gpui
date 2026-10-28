@@ -1,4 +1,4 @@
-use crate::models::{Attachment, Chat, Contact, Envelope, Message, ServerInfo};
+use crate::models::{Attachment, Chat, Contact, Envelope, Message, ServerInfo, SharedCard};
 use reqwest::{Method, StatusCode, multipart};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -694,6 +694,17 @@ impl Client {
         .await?
         .data
         .ok_or_else(|| ApiError::Decode("response has no data".into()))
+    }
+
+    /// The name and photo `address` shares through iMessage, as the Mac's
+    /// Messages has it. Needs the Private API.
+    pub async fn shared_card(&self, address: &str) -> Result<SharedCard, ApiError> {
+        let query = [("address", address.to_owned())];
+        Ok(self
+            .call::<SharedCard>(Method::GET, "icloud/contact", &query, None)
+            .await?
+            .data
+            .unwrap_or_default())
     }
 }
 

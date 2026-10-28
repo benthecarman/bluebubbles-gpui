@@ -110,9 +110,15 @@ The outbox is a table, so pending sends survive a restart.
 
 Tapbacks, edits, unsends, replies and effects need the server's Private
 API helper. The engine reads its availability from `/server/info` and the
-UI only offers what will work. The helper also marks chats read on the
-Mac (`POST /chat/:guid/read`). Without it, chats are read in this app
-only; the Mac and other clients still show them unread.
+UI only offers what will work. Two more things depend on it:
+
+- Marking chats read on the Mac (`POST /chat/:guid/read`). Without the
+  helper, chats are read in this app only; the Mac and other clients
+  still show them unread.
+- Photos people share with iMessage's Name and Photo Sharing. The helper
+  reads them from Messages (`GET /icloud/contact?address=`); nothing else
+  on the server does. They fill in for people without a contact photo
+  and are asked for again weekly.
 
 ## UI
 

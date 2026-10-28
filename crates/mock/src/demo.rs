@@ -58,11 +58,13 @@ pub fn seed_demo(server: &MockServer) {
     server.add_contact("Sam Rivera", &[SAM], &[]);
     server.add_contact("Jordan Lee", &[JORDAN], &[]);
     server.add_contact("Priya Shah", &[], &[PRIYA]);
-    // Jordan has no photo, so the list shows initials too.
     server.set_contact_photo("Mom", &portrait([236, 160, 120], [120, 70, 50]));
     server.set_contact_photo("Alex Kim", &portrait([110, 170, 230], [40, 50, 70]));
     server.set_contact_photo("Sam Rivera", &portrait([150, 210, 140], [90, 60, 40]));
     server.set_contact_photo("Priya Shah", &portrait([230, 140, 190], [30, 25, 25]));
+    // Jordan has no contact photo but shares one through iMessage, so the
+    // list shows it with the Private API and initials without.
+    server.set_shared_photo(JORDAN, &portrait([250, 200, 90], [60, 40, 30]));
 
     let mom = format!("iMessage;-;{MOM}");
     let alex = format!("iMessage;-;{ALEX}");

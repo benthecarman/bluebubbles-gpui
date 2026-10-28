@@ -2,7 +2,8 @@
 
 use bb_api::ServerConfig;
 use bb_core::{
-    Connection, Engine, EngineConfig, EngineEvent, Names, Region, Tapback, TextMessage, Timings,
+    Connection, Engine, EngineConfig, EngineEvent, Names, Photo, Region, Tapback, TextMessage,
+    Timings,
 };
 use bb_mock::{MockServer, SendBehaviour, demo, seed_demo};
 use bb_socket::Backoff;
@@ -827,4 +828,54 @@ async fn mark_all_read_stays_local_without_the_private_api() {
     engine.sync_now();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(store.unread_chat_count().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn photos_people_share_fill_in_for_contact_photos() {
+    let server = MockServer::start(PASSWORD).await;
+    for who in [demo::ALEX, demo::SAM, demo::JORDAN] {
+        server.add_chat(&dm(who), None, &[who]);
+    }
+    server.add_contact("Alex Kim", &[], &[demo::ALEX]);
+    server.set_contact_photo("Alex Kim", &demo::portrait([1, 2, 3], [4, 5, 6]));
+    server.set_shared_photo(demo::ALEX, &demo::portrait([9, 9, 9], [9, 9, 9]));
+    server.set_shared_photo(demo::SAM, &demo::portrait([7, 8, 9], [1, 1, 1]));
+    let (_engine, _events, store) = synced(&server).await;
+
+    wait_until(|| server.shared_asked().len() == 2).await;
+    let asked = server.shared_asked();
+    assert!(!asked.iter().any(|a| a == demo::ALEX), "{asked:?}");
+    let region = Region::new("US");
+    let mut names = Names::default();
+    wait_until(|| {
+        names = Names::load(&store, region, [demo::ALEX, demo::SAM, demo::JORDAN]).unwrap();
+        names.photo(demo::SAM).is_some()
+    })
+    .await;
+    // A contact's own photo wins; Jordan shares none.
+    assert!(matches!(names.photo(demo::ALEX), Some(Photo::Contact(_))));
+    assert!(names.photo(demo::JORDAN).is_none());
+    let shared = names.photo(demo::SAM).unwrap();
+    assert!(matches!(shared, Photo::Shared(_)));
+    let image = image::load_from_memory(&shared.load(&store).unwrap()).unwrap();
+    assert_eq!((image.width(), image.height()), (192, 192));
+}
+
+#[tokio::test]
+async fn shared_photos_need_the_private_api() {
+    let server = MockServer::start(PASSWORD).await;
+    server.set_info(|i| {
+        i.private_api = Some(false);
+        i.helper_connected = Some(false);
+    });
+    server.add_chat(&dm(demo::SAM), None, &[demo::SAM]);
+    server.set_shared_photo(demo::SAM, &demo::portrait([7, 8, 9], [1, 1, 1]));
+    let (_engine, _events, _store) = synced(&server).await;
+    wait_until(|| contact_requests(&server) == 2).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let requests = server.requests();
+    assert!(
+        !requests.iter().any(|r| r.contains("/icloud/")),
+        "{requests:#?}"
+    );
 }
