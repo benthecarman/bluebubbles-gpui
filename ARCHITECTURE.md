@@ -153,6 +153,11 @@ clears after 60 s without an update.
   right-click menu replaces the textarea's default one, with suggestions,
   Ignore Spelling (for this run only) and Add to Dictionary (saved in
   `dictionary.txt` in the config directory).
+- Messages from iMessage apps (`app_message.rs`) are cards, not their
+  placeholder text. Apple Cash shows the amount and whether it is a
+  payment or a request, from the `userInfo` archived in `payloadData`.
+  Other apps show their caption and name. Previews and notifications
+  say "Apple Cash: $20.00 Payment".
 - Images are fetched once into a disk cache and decoded off the UI
   thread. HEIC photos are requested from the server as JPEG.
 - Clicking the name or picture above a conversation opens its details,

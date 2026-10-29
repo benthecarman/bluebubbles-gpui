@@ -65,7 +65,7 @@ pub fn parse(payload: &Value) -> Option<RichLink> {
 }
 
 /// Follows `{"UID": n}` references; the string `$null` is nothing.
-fn resolve<'a>(objects: &'a [Value], v: &'a Value) -> Option<&'a Value> {
+pub(crate) fn resolve<'a>(objects: &'a [Value], v: &'a Value) -> Option<&'a Value> {
     let mut v = v;
     for _ in 0..8 {
         match v.get("UID").and_then(Value::as_u64) {

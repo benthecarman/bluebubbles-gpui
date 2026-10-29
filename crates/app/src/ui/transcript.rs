@@ -6,6 +6,7 @@
 //! Pure data, so the layout rules are unit tested without a window.
 
 use super::time;
+use bb_core::app_message::{self, AppMessage};
 use bb_core::rich_link::{self, URL_BALLOON};
 use bb_core::{Names, Reaction, tapback};
 use bb_store::{AttachmentRow, MessageRow};
@@ -64,6 +65,8 @@ pub struct Bubble {
     /// Photos, videos, audio and files, in order.
     pub media: Vec<Media>,
     pub link: Option<Link>,
+    /// Sent from an iMessage app, such as Apple Cash.
+    pub app: Option<AppMessage>,
     /// Standing tapbacks, oldest first.
     pub reactions: Vec<Reaction>,
     /// The message this one replies to.
@@ -136,13 +139,14 @@ fn kind(m: &MessageRow, chat_service: &str) -> Kind {
     }
 }
 
-/// Text without the object-replacement characters attachments leave.
+/// Text without the object-replacement characters attachments and
+/// iMessage apps leave (U+FFFD where the server couldn't decode one).
 fn visible_text(m: &MessageRow) -> Option<String> {
     let t: String = m
         .text
         .as_deref()?
         .chars()
-        .filter(|&c| c != '\u{fffc}')
+        .filter(|&c| c != '\u{fffc}' && c != '\u{fffd}')
         .collect();
     let t = t.trim_matches(|c: char| c.is_whitespace());
     (!t.is_empty()).then(|| t.to_owned())
@@ -350,6 +354,11 @@ where
         });
         let mut text = visible_text(m);
         let link = link(m, text.as_deref());
+        let app = app_message::parse(m.balloon_bundle_id.as_deref(), m.payload_data.as_ref());
+        // An app's message is its card; any text is its placeholder.
+        if app.is_some() {
+            text = None;
+        }
         // The card shows the link; a bare URL needs no bubble as well.
         if link.is_some() && text.as_deref().is_some_and(looks_like_url) {
             text = None;
@@ -400,6 +409,7 @@ where
             receipt,
             media,
             link,
+            app,
             reactions: reactions_on(m, cx.associated),
             quote,
             row: m.clone(),
@@ -621,6 +631,23 @@ mod tests {
         );
         assert_eq!(b.text.as_deref(), Some("look"));
         assert!(!b.jumbo);
+    }
+
+    #[test]
+    fn an_app_message_is_a_card_without_its_placeholder() {
+        let mut m = msg(1, None, "\u{fffd}", T0);
+        m.balloon_bundle_id = Some(
+            "com.apple.messages.MSMessageExtensionBalloonPlugin:0000000000:\
+             com.apple.PassbookUIService.PeerPaymentMessagesExtension"
+                .into(),
+        );
+        let t = build_with(&[m], false, false);
+        let b = bubbles(&t)[0];
+        assert_eq!(b.text, None);
+        assert_eq!(b.app.as_ref().map(|a| a.app.as_str()), Some("Apple Cash"));
+        // A stray replacement character alone isn't text either.
+        let t = build_with(&[msg(2, Some("a"), "\u{fffd}", T0)], false, false);
+        assert_eq!(bubbles(&t).first().and_then(|b| b.text.clone()), None);
     }
 
     #[test]

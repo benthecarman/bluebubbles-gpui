@@ -16,6 +16,7 @@ use crate::ui::transcript::{
     self, Bubble as Item_, Item, Key, Kind, Link, Media, MediaKind, Quote, Receipt, Transcript,
 };
 use crate::ui::window_controls::{self, Side};
+use bb_core::app_message::{AppKind, AppMessage};
 use bb_core::{Names, Reaction, Tapback, tapback};
 use bb_store::{AttachmentRow, ChatRow, MessageRow};
 use bb_ui::theme::{GROUP_GAP, GROUPED_GAP, TAIL};
@@ -801,6 +802,9 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
     if let Some(link) = &b.link {
         content = content.child(link_card(link, rcx, cx));
     }
+    if let Some(app) = &b.app {
+        content = content.child(app_card(app, cx));
+    }
     if let Some(text) = &b.text {
         if b.jumbo {
             content = content.child(
@@ -1302,6 +1306,88 @@ fn link_card(link: &Link, rcx: &RenderCx, cx: &App) -> AnyElement {
         )
         .on_click(move |_, _, cx| cx.open_url(&url))
         .into_any_element()
+}
+
+/// A message from an iMessage app. Apple Cash is a black card with the
+/// amount, as on the iPhone; other apps show their name and caption.
+fn app_card(app: &AppMessage, cx: &App) -> AnyElement {
+    let colors = *cx.colors();
+    let metrics = cx.theme().metrics();
+    let radius = metrics.bubble_radius();
+    let card = div()
+        .w(px(220.))
+        .px(px(14.))
+        .py(px(11.))
+        .rounded(radius)
+        .flex()
+        .flex_col()
+        .gap(px(2.));
+    match &app.kind {
+        AppKind::Payment { amount, label } => {
+            let white = gpui_kit::white();
+            let (big, small) = match (amount, label) {
+                (Some(a), l) => (a.clone(), l.clone()),
+                (None, Some(l)) => (l.clone(), None),
+                (None, None) => ("Payment".to_owned(), None),
+            };
+            // The edge keeps a black card distinct in dark mode.
+            card.bg(gpui_kit::black())
+                .border_1()
+                .border_color(white.opacity(0.12))
+                .child(
+                    div()
+                        .text_size(metrics.caption())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(white.opacity(0.75))
+                        .child(app.app.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(28.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(white)
+                        .child(big),
+                )
+                .children(small.map(|s| {
+                    div()
+                        .text_size(metrics.caption())
+                        .text_color(white.opacity(0.75))
+                        .child(s)
+                }))
+                .into_any_element()
+        }
+        AppKind::Other { caption, detail } => {
+            // The caption over the app's name, or the name over what it
+            // says it sent.
+            let (title, below) = match caption {
+                Some(c) => (
+                    c.clone(),
+                    Some(match detail {
+                        Some(d) => format!("{} · {d}", app.app),
+                        None => app.app.clone(),
+                    }),
+                ),
+                None => (app.app.clone(), detail.clone()),
+            };
+            card.bg(colors.received)
+                .child(
+                    div()
+                        .text_size(metrics.message_text())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.on_received)
+                        .line_clamp(2)
+                        .child(title),
+                )
+                .children(below.map(|b| {
+                    div()
+                        .text_size(metrics.caption())
+                        .text_color(colors.text_secondary)
+                        .line_clamp(2)
+                        .child(b)
+                }))
+                .into_any_element()
+        }
+    }
 }
 
 /// The message replied to, small and faded above the reply.

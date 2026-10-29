@@ -2,6 +2,7 @@
 //! the sidebar and notifications.
 
 use crate::address::{self, Region};
+use crate::app_message;
 use crate::tapback::{self, Association};
 use bb_store::{ChatRow, ContactRow, MessageRow, Store};
 use std::collections::{HashMap, HashSet};
@@ -183,6 +184,11 @@ impl Names {
                 Association::Remove(_) => return clean(m.text.as_deref()).unwrap_or_default(),
                 _ => {}
             }
+        }
+        if let Some(app) =
+            app_message::parse(m.balloon_bundle_id.as_deref(), m.payload_data.as_ref())
+        {
+            return app.summary();
         }
         if let Some(text) = clean(m.text.as_deref()) {
             return text;

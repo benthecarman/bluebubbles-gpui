@@ -155,13 +155,19 @@ pub fn seed_demo(server: &MockServer) {
         (Some(MOM), "Did you get home safe?", at(3 * DAY)),
         (me, "Yes! Thanks for dinner ❤️", at(3 * DAY - 10 * MIN)),
         (Some(MOM), "Anytime sweetie", at(3 * DAY - 12 * MIN)),
+        (me, "\u{fffc}", at(2 * DAY)),
+        (me, "happy birthday", at(2 * DAY - 20_000)),
+        (Some(MOM), "\u{fffc}", at(2 * DAY - 30 * MIN)),
         (Some(MOM), "Are you coming for Sunday lunch?", at(26 * MIN)),
         (me, "Wouldn't miss it", at(25 * MIN)),
         (me, "Should I bring anything?", at(25 * MIN - 20_000)),
         (Some(MOM), "Just yourself 😊", at(9 * MIN)),
     ];
     let mom_ids = insert_all(server, &mom, &mut seq);
-    for guid in &mom_ids[4..6] {
+    // Apple Cash: a payment from me, and Mom asking for one back.
+    apple_cash(server, &mom_ids[3], "$20.00 Payment");
+    apple_cash(server, &mom_ids[5], "$12.50 Request");
+    for guid in &mom_ids[7..9] {
         server.update(guid, true, |m| {
             m.date_delivered = Some(at(24 * MIN));
             m.date_read = Some(at(10 * MIN));
@@ -314,6 +320,36 @@ fn tapback(
     server.update(&m.guid, true, |m| {
         m.associated_message_guid = Some(format!("p:0/{target}"));
         m.associated_message_type = Some(kind.to_owned());
+    });
+}
+
+/// Makes `guid` an Apple Cash message, archived as Messages sends it.
+fn apple_cash(server: &MockServer, guid: &str, subcaption: &str) {
+    server.update(guid, true, |m| {
+        m.balloon_bundle_id = Some(
+            "com.apple.messages.MSMessageExtensionBalloonPlugin:0000000000:\
+             com.apple.PassbookUIService.PeerPaymentMessagesExtension"
+                .into(),
+        );
+        m.payload_data = Some(serde_json::json!([{
+            "$archiver": "NSKeyedArchiver",
+            "$top": {"root": {"UID": 1}},
+            "$objects": [
+                "$null",
+                {
+                    "NS.keys": [{"UID": 3}, {"UID": 4}, {"UID": 5}],
+                    "NS.objects": [{"UID": 6}, {"UID": 7}, {"UID": 2}]
+                },
+                {
+                    "NS.keys": [{"UID": 8}, {"UID": 9}],
+                    "NS.objects": [{"UID": 10}, {"UID": 11}]
+                },
+                "an", "ldtext", "userInfo",
+                "Apple Pay", "Apple Cash",
+                "caption", "subcaption",
+                "Apple Cash", subcaption
+            ]
+        }]));
     });
 }
 
