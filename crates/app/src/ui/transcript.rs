@@ -319,11 +319,7 @@ where
 {
     let mut items = Vec::new();
     let mut keys = Vec::new();
-    let receipt_owner = rows
-        .iter()
-        .rev()
-        .find(|m| m.is_from_me && !is_event(m) && !m.is_failed())
-        .map(|m| m.id);
+    let receipts = Receipts::find(rows, cx);
     let mut prev: Option<&MessageRow> = None;
     for (i, m) in rows.iter().enumerate() {
         let new_section = prev.is_none_or(|p| m.date_created - p.date_created > SEPARATOR_GAP);
@@ -387,10 +383,8 @@ where
             });
         let receipt = if m.is_from_me && m.is_failed() {
             Some(Receipt::Failed)
-        } else if Some(m.id) == receipt_owner && !m.is_pending() {
-            status(m, cx)
         } else {
-            None
+            receipts.for_message(m, cx)
         };
         // A receipt or a failure ends the run visually, so it keeps its tail.
         let tail = !next_continues || receipt.is_some();
@@ -427,28 +421,71 @@ where
 
 /// The status under your latest message. Read receipts exist only in
 /// iMessage DMs; groups and SMS say Delivered at most.
-fn status<Tz: TimeZone>(m: &MessageRow, cx: &Context<'_, Tz>) -> Option<Receipt>
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let kind = kind(m, cx.chat_service);
-    if let Some(read) = m
-        .date_read
-        .filter(|_| !cx.is_group && kind == Kind::IMessage)
+/// Which of my messages carry a receipt, as in Messages: "Read" under
+/// the newest one that was read, and "Delivered" under the newest one
+/// delivered after it. A message still on its way shows nothing, and the
+/// earlier ones keep theirs until it arrives.
+struct Receipts {
+    read: Option<i64>,
+    delivered: Option<i64>,
+    /// The newest of my messages, for "Sent as Text Message".
+    newest: Option<i64>,
+}
+
+impl Receipts {
+    fn find<Tz: TimeZone>(rows: &[MessageRow], cx: &Context<'_, Tz>) -> Self {
+        let mine: Vec<&MessageRow> = rows
+            .iter()
+            .filter(|m| m.is_from_me && !is_event(m) && !m.is_failed())
+            .collect();
+        let read = mine
+            .iter()
+            .rev()
+            .find(|m| m.date_read.is_some() && shows_read(m, cx))
+            .map(|m| m.id);
+        let delivered = mine
+            .iter()
+            .rev()
+            .take_while(|m| Some(m.id) != read)
+            .find(|m| is_delivered(m))
+            .map(|m| m.id);
+        Self {
+            read,
+            delivered,
+            newest: mine.last().map(|m| m.id),
+        }
+    }
+
+    fn for_message<Tz: TimeZone>(&self, m: &MessageRow, cx: &Context<'_, Tz>) -> Option<Receipt>
+    where
+        Tz::Offset: std::fmt::Display,
     {
-        return Some(Receipt::Status(time::receipt(
-            "Read",
-            &(cx.to_local)(read),
-            &cx.now,
-        )));
+        if Some(m.id) == self.read {
+            let read = m.date_read?;
+            return Some(Receipt::Status(time::receipt(
+                "Read",
+                &(cx.to_local)(read),
+                &cx.now,
+            )));
+        }
+        if Some(m.id) == self.delivered {
+            return Some(Receipt::Status("Delivered".into()));
+        }
+        if Some(m.id) == self.newest && !m.is_pending() && kind(m, cx.chat_service) == Kind::Sms {
+            return Some(Receipt::Status("Sent as Text Message".into()));
+        }
+        None
     }
-    if m.date_delivered.is_some() {
-        return Some(Receipt::Status("Delivered".into()));
-    }
-    if kind == Kind::Sms {
-        return Some(Receipt::Status("Sent as Text Message".into()));
-    }
-    None
+}
+
+/// Read receipts come only from iMessage, and not in groups.
+fn shows_read<Tz: TimeZone>(m: &MessageRow, cx: &Context<'_, Tz>) -> bool {
+    !cx.is_group && kind(m, cx.chat_service) == Kind::IMessage
+}
+
+/// Some servers set the flag without the date.
+fn is_delivered(m: &MessageRow) -> bool {
+    !m.is_pending() && (m.date_delivered.is_some() || m.is_delivered)
 }
 
 #[cfg(test)]
@@ -557,7 +594,36 @@ mod tests {
     }
 
     #[test]
-    fn receipt_under_the_latest_only() {
+    fn earlier_receipts_stay_until_the_newest_arrives() {
+        let mut a = msg(1, None, "one", T0);
+        a.date_delivered = Some(T0 + 1000);
+        a.date_read = Some(T0 + 2000);
+        let mut b = msg(2, None, "two", T0 + 3000);
+        b.date_delivered = Some(T0 + 4000);
+        // Sent, but not delivered yet: the receipts above stay.
+        let c = msg(3, None, "three", T0 + 5000);
+        let t = build_with(&[a, b, c.clone()], false, false);
+        let bs = bubbles(&t);
+        let Some(Receipt::Status(s)) = &bs[0].receipt else {
+            panic!("{:?}", bs[0].receipt)
+        };
+        assert!(s.starts_with("Read "), "{s}");
+        assert_eq!(bs[1].receipt, Some(Receipt::Status("Delivered".into())));
+        assert_eq!(bs[2].receipt, None);
+
+        // The flag alone counts as delivered; Delivered moves down.
+        let mut c = c;
+        c.is_delivered = true;
+        let mut a = msg(1, None, "one", T0);
+        a.date_read = Some(T0 + 2000);
+        let t = build_with(&[a, c], false, false);
+        let bs = bubbles(&t);
+        assert!(matches!(&bs[0].receipt, Some(Receipt::Status(s)) if s.starts_with("Read ")));
+        assert_eq!(bs[1].receipt, Some(Receipt::Status("Delivered".into())));
+    }
+
+    #[test]
+    fn read_and_delivered_each_sit_under_their_newest() {
         let mut a = msg(1, None, "one", T0);
         a.date_delivered = Some(T0 + 1000);
         a.date_read = Some(T0 + 2000);
@@ -565,16 +631,16 @@ mod tests {
         b.date_delivered = Some(T0 + 4000);
         let t = build_with(&[a.clone(), b.clone()], false, false);
         let bs = bubbles(&t);
-        assert_eq!(bs[0].receipt, None);
+        assert!(matches!(&bs[0].receipt, Some(Receipt::Status(s)) if s.starts_with("Read ")));
         assert_eq!(bs[1].receipt, Some(Receipt::Status("Delivered".into())));
         assert!(bs[1].tail);
 
+        // Once the newer one is read, it takes Read and the older is bare.
         b.date_read = Some(T0 + 5000);
         let t = build_with(&[a, b.clone()], false, false);
-        let Some(Receipt::Status(s)) = &bubbles(&t)[1].receipt else {
-            panic!()
-        };
-        assert!(s.starts_with("Read "), "{s}");
+        let bs = bubbles(&t);
+        assert_eq!(bs[0].receipt, None);
+        assert!(matches!(&bs[1].receipt, Some(Receipt::Status(s)) if s.starts_with("Read ")));
 
         // Groups don't show Read.
         let t = build_with(&[b], true, false);
