@@ -232,7 +232,8 @@ fn checkable(word: &str) -> bool {
         && !word.chars().any(|c| c.is_numeric() || c == '_')
 }
 
-/// Links, email addresses, @mentions and #tags, which aren't words.
+/// Links, email addresses, @mentions, #tags and :emoji: shortcodes,
+/// which aren't words.
 fn skipped_spans(text: &str) -> Vec<Range<usize>> {
     text.split_whitespace()
         .filter(|t| {
@@ -240,6 +241,7 @@ fn skipped_spans(text: &str) -> Vec<Range<usize>> {
                 || t.starts_with("www.")
                 || t.contains('@')
                 || t.starts_with('#')
+                || t.starts_with(':')
                 || (t.contains('.') && t.contains('/'))
         })
         .map(|t| {
@@ -279,7 +281,7 @@ mod tests {
     fn leaves_links_numbers_and_mentions_alone() {
         let s = speller();
         let text = "see https://exmaple.com/foo or www.qwzx.org, mail qwzx@exmaple.com, \
-                    @qwzxy #qwzxtag at 5pm in 3rd";
+                    @qwzxy #qwzxtag :qwzx_face: :qwzx at 5pm in 3rd";
         assert!(
             marked(&s, text, None).is_empty(),
             "{:?}",

@@ -25,6 +25,8 @@ gpui-pre-linux = "0.3.8"
 image.workspace = true
 # Hunspell-compatible spellchecking for the composer.
 spellbook = "0.4"
+# Emoji and their GitHub shortcodes, for :joy: in the composer.
+emojis = "0.9"
 ksni = { version = "0.3", default-features = false, features = ["async-io"] }
 oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
 serde.workspace = true

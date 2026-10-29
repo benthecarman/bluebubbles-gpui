@@ -7,9 +7,9 @@ looks and behaves like Apple's Messages and works with or without the
 server's Private API.
 
 It does conversations, replies and tapbacks, attachments, and
-notifications. It keeps running in the tray, and it checks your spelling as
-you type. Everything is cached in SQLite, so it opens instantly and works
-offline.
+notifications. It keeps running in the tray, checks your spelling as you
+type, and turns `:joy:` into 😂, with suggestions as you type a `:name`.
+Everything is cached in SQLite, so it opens instantly and works offline.
 
 This is an independent project, not affiliated with BlueBubbles.
 

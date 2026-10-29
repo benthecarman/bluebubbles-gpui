@@ -3,6 +3,7 @@
 mod badge;
 mod config;
 mod credentials;
+mod emoji;
 mod instance;
 mod notify;
 mod runtime;

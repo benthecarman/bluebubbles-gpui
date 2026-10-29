@@ -137,6 +137,13 @@ clears after 60 s without an update.
 - The composer is gpui-kit's textarea: Enter sends, Shift+Enter adds a
   line, numpad Enter is Enter, and shortcuts ignore Num Lock. Files can be
   pasted or dropped onto it.
+- Emoji shortcodes (`emoji.rs`) use GitHub's names from the `emojis`
+  crate. A closing colon turns `:joy:` into 😂. From two letters after a
+  colon, a list above the field offers matches: whole names, then
+  prefixes (shortest first), then later words, with flags last. Capture
+  action handlers on the field take Up, Down, Enter, Tab and Escape while
+  the list shows, so Enter puts in an emoji instead of sending. Emoji
+  newer than the bundled font (Emoji 17.0) aren't offered.
 - Spellcheck (`spell.rs`) uses spellbook, a pure-Rust Hunspell reader,
   with an en_US dictionary built into the binary. For other locales it
   uses the system's Hunspell dictionary when one is installed. The

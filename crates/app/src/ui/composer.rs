@@ -7,8 +7,13 @@
 //!
 //! Misspelled words get a red squiggle once typed past; right-click one
 //! for suggestions, Ignore Spelling or Add to Dictionary.
+//!
+//! `:joy:` becomes 😂 when its closing colon is typed, and from `:jo` a
+//! list of matching emoji shows above the field: Up and Down pick, Enter
+//! or Tab puts one in, Escape hides the list.
 
 use crate::config;
+use crate::emoji::{self, Suggestion};
 use crate::session::{Session, SessionEvent};
 use crate::shell::Shell;
 use crate::spell;
@@ -18,7 +23,8 @@ use bb_core::TextMessage;
 use bb_ui::{ActiveTheme, Icon, icon};
 use gpui_kit::component::Sizable;
 use gpui_kit::component::input::{
-    Copy, Cut, InputEvent, Paste, SelectAll, Textarea, TextareaState,
+    Copy, Cut, Enter, Escape, IndentInline, InputEvent, MoveDown, MoveEnd, MoveHome, MoveLeft,
+    MoveRight, MoveUp, Paste, SelectAll, Textarea, TextareaState,
 };
 use gpui_kit::component::native_menu::NativeMenu;
 use gpui_kit::prelude::FluentBuilder;
@@ -30,6 +36,18 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Most emoji the shortcode list shows.
+const EMOJI_SUGGESTIONS: usize = 8;
+
+/// The emoji list for the `:name` before the caret.
+struct EmojiMenu {
+    /// The `:name` typed, colon included.
+    range: Range<usize>,
+    query: String,
+    items: Vec<Suggestion>,
+    selected: usize,
+}
 
 /// Replaces a misspelled `word` at `range` with a suggestion.
 #[derive(Clone, PartialEq, Deserialize, Action)]
@@ -114,6 +132,10 @@ pub struct Composer {
     staged: Vec<Staged>,
     reply_to: Option<ReplyTo>,
     spelling: Rc<RefCell<Spelling>>,
+    emoji: Option<EmojiMenu>,
+    /// Where the `:name` whose list Escape hid starts; it stays hidden
+    /// while that name is typed.
+    emoji_dismissed: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -146,7 +168,11 @@ impl Composer {
                 cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
                     match event {
                         InputEvent::PressEnter { shift: false, .. } => this.send(window, cx),
-                        InputEvent::Change => this.changed(cx),
+                        InputEvent::Change => {
+                            this.changed(cx);
+                            this.shortcodes(window, cx);
+                        }
+                        InputEvent::Blur => this.close_emoji(cx),
                         _ => {}
                     }
                 }),
@@ -174,6 +200,8 @@ impl Composer {
             staged: Vec::new(),
             reply_to: None,
             spelling: Default::default(),
+            emoji: None,
+            emoji_dismissed: None,
             _subscriptions: subscriptions,
         }
     }
@@ -198,6 +226,157 @@ impl Composer {
         }
         self.error = Some("The message couldn't be saved, so it wasn't sent.".into());
         cx.notify();
+    }
+
+    /// Turns a finished `:name:` into its emoji, and keeps the list for
+    /// the one being typed up to date.
+    fn shortcodes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.input.read(cx);
+        let text = state.value();
+        let caret = state.cursor();
+        if !state.selected_range().is_empty() {
+            self.close_emoji(cx);
+            return;
+        }
+        if let Some((range, emoji)) = emoji::completed_at(&text, caret) {
+            // The edit changes the text again, which closes the list.
+            self.input.update(cx, |s, cx| {
+                s.set_selected_range(range, cx);
+                s.replace(emoji, window, cx);
+            });
+            return;
+        }
+        let typed = emoji::query_at(&text, caret);
+        if self.emoji_dismissed != typed.as_ref().map(|(r, _)| r.start) {
+            self.emoji_dismissed = None;
+        }
+        let menu = typed
+            .filter(|(r, _)| self.emoji_dismissed != Some(r.start))
+            .map(|(range, query)| (range, query, emoji::suggestions(query, EMOJI_SUGGESTIONS)))
+            .filter(|(_, _, items)| !items.is_empty())
+            .map(|(range, query, items)| EmojiMenu {
+                // Keep the pick while the list is the same one.
+                selected: self
+                    .emoji
+                    .as_ref()
+                    .filter(|m| m.range.start == range.start && m.items == items)
+                    .map_or(0, |m| m.selected),
+                range,
+                query: query.to_owned(),
+                items,
+            });
+        if menu.is_some() || self.emoji.is_some() {
+            self.emoji = menu;
+            cx.notify();
+        }
+    }
+
+    fn close_emoji(&mut self, cx: &mut Context<Self>) {
+        if self.emoji.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Puts the picked emoji (or the selected one) in place of its
+    /// `:name`.
+    fn accept_emoji(&mut self, ix: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(menu) = self.emoji.take() else {
+            return;
+        };
+        let Some(item) = menu.items.get(ix.unwrap_or(menu.selected)) else {
+            return;
+        };
+        self.input.update(cx, |s, cx| {
+            s.set_selected_range(menu.range.clone(), cx);
+            s.replace(item.emoji, window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn move_emoji(&mut self, down: bool, cx: &mut Context<Self>) -> bool {
+        let Some(menu) = &mut self.emoji else {
+            return false;
+        };
+        let n = menu.items.len();
+        menu.selected = if down {
+            (menu.selected + 1) % n
+        } else {
+            (menu.selected + n - 1) % n
+        };
+        cx.notify();
+        true
+    }
+
+    /// The emoji list, over the transcript just above the field.
+    fn emoji_menu(&self, menu: &EmojiMenu, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = *cx.colors();
+        let m = cx.theme().metrics();
+        let rows = menu.items.iter().enumerate().map(|(ix, item)| {
+            let selected = ix == menu.selected;
+            div()
+                .id(("emoji", ix))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(8.))
+                .py(px(3.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .when(selected, |d| d.bg(colors.accent))
+                .child(div().w(px(24.)).text_size(px(18.)).child(item.emoji))
+                .child(
+                    div()
+                        .text_size(m.body())
+                        .text_color(if selected {
+                            gpui_kit::white()
+                        } else {
+                            colors.text
+                        })
+                        .truncate()
+                        .child(format!(":{}:", item.shortcode)),
+                )
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    if let Some(menu) = &mut this.emoji
+                        && *hovered
+                        && menu.selected != ix
+                    {
+                        menu.selected = ix;
+                        cx.notify();
+                    }
+                }))
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.accept_emoji(Some(ix), window, cx)),
+                )
+        });
+        deferred(
+            div()
+                .id("emoji-menu")
+                .occlude()
+                .absolute()
+                .bottom_full()
+                .left_0()
+                .mb(px(6.))
+                .w(px(280.))
+                .p(px(4.))
+                .rounded(px(10.))
+                .bg(colors.popover)
+                .border_1()
+                .border_color(colors.popover_border)
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .px(px(8.))
+                        .pt(px(2.))
+                        .pb(px(4.))
+                        .text_size(m.caption())
+                        .text_color(colors.text_secondary)
+                        .child(format!("Emoji matching :{}", menu.query)),
+                )
+                .children(rows),
+        )
     }
 
     fn changed(&mut self, cx: &mut Context<Self>) {
@@ -497,6 +676,7 @@ impl Render for Composer {
             })
             .child(
                 div()
+                    .relative()
                     .w_full()
                     .min_h(px(30.))
                     .pl(px(6.))
@@ -509,6 +689,9 @@ impl Render for Composer {
                     .flex()
                     .items_end()
                     .gap(px(6.))
+                    .when_some(self.emoji.as_ref(), |d, menu| {
+                        d.child(self.emoji_menu(menu, cx))
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -519,6 +702,62 @@ impl Render for Composer {
                             .child(
                                 div()
                                     .relative()
+                                    // While the emoji list shows, its keys
+                                    // go to it rather than the field.
+                                    .capture_action(cx.listener(|this, a: &Enter, window, cx| {
+                                        if this.emoji.is_some() && !a.secondary {
+                                            this.accept_emoji(None, window, cx);
+                                            cx.stop_propagation();
+                                        }
+                                    }))
+                                    .capture_action(cx.listener(
+                                        |this, _: &IndentInline, window, cx| {
+                                            if this.emoji.is_some() {
+                                                this.accept_emoji(None, window, cx);
+                                                cx.stop_propagation();
+                                            }
+                                        },
+                                    ))
+                                    .capture_action(cx.listener(|this, _: &MoveUp, _, cx| {
+                                        if this.move_emoji(false, cx) {
+                                            cx.stop_propagation();
+                                        }
+                                    }))
+                                    .capture_action(cx.listener(|this, _: &MoveDown, _, cx| {
+                                        if this.move_emoji(true, cx) {
+                                            cx.stop_propagation();
+                                        }
+                                    }))
+                                    .capture_action(cx.listener(|this, _: &Escape, _, cx| {
+                                        if let Some(menu) = this.emoji.take() {
+                                            this.emoji_dismissed = Some(menu.range.start);
+                                            cx.notify();
+                                            cx.stop_propagation();
+                                        }
+                                    }))
+                                    // Moving the caret leaves the name.
+                                    .capture_action(
+                                        cx.listener(|this, _: &MoveLeft, _, cx| {
+                                            this.close_emoji(cx)
+                                        }),
+                                    )
+                                    .capture_action(cx.listener(|this, _: &MoveRight, _, cx| {
+                                        this.close_emoji(cx)
+                                    }))
+                                    .capture_action(
+                                        cx.listener(|this, _: &MoveHome, _, cx| {
+                                            this.close_emoji(cx)
+                                        }),
+                                    )
+                                    .capture_action(
+                                        cx.listener(|this, _: &MoveEnd, _, cx| {
+                                            this.close_emoji(cx)
+                                        }),
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| this.close_emoji(cx)),
+                                    )
                                     .child(
                                         Textarea::new(&self.input)
                                             .appearance(false)
