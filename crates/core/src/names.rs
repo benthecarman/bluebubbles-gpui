@@ -88,6 +88,11 @@ impl Names {
         }
     }
 
+    /// The address itself as shown: "(555) 010-1234", or the email.
+    pub fn address(&self, address: &str) -> String {
+        address::display(address, self.region())
+    }
+
     /// "Alex", for group titles and group transcripts.
     pub fn short(&self, address: &str) -> String {
         match self.contact(address) {

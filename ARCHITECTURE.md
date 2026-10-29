@@ -148,6 +148,10 @@ clears after 60 s without an update.
   `dictionary.txt` in the config directory).
 - Images are fetched once into a disk cache and decoded off the UI
   thread. HEIC photos are requested from the server as JPEG.
+- Clicking the name or picture above a conversation opens its details,
+  a popover like Messages' Details: the conversation's picture, name and
+  service, then each person in it with their address. Clicking a person
+  copies their address.
 - The More (⋯) menu above the conversation list has Mark All as Read,
   where iOS keeps Read All behind Edit. Right-clicking a conversation
   marks it read or unread.

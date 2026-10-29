@@ -1,5 +1,8 @@
 //! One conversation: the header, the transcript and the composer.
 //!
+//! Clicking the name or picture in the header shows the conversation's
+//! details: who is in it, at which addresses, over which service.
+//!
 //! Photos download as they come into the transcript and are drawn from
 //! small decoded copies; other files download when clicked and open in
 //! the system's app for them.
@@ -37,6 +40,14 @@ const AUTO_DOWNLOAD_MAX: i64 = 40_000_000;
 /// Room above a bubble for its tapback badge.
 const BADGE_ROOM: f32 = 16.;
 
+const DETAILS_WIDTH: f32 = 300.;
+
+actions!(conversation, [CloseDetails]);
+
+pub fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("escape", CloseDetails, Some("ChatDetails"))]);
+}
+
 /// Decoded photos by attachment GUID; `None` when the file isn't an
 /// image we can decode (it shows as a file instead).
 type Thumbs = HashMap<String, Option<Arc<RenderImage>>>;
@@ -66,6 +77,11 @@ pub struct Conversation {
     requested: HashSet<String>,
     /// Files clicked before they were downloaded; they open on arrival.
     opening: Rc<HashSet<String>>,
+    /// The details popover under the header is open.
+    details: bool,
+    details_focus: FocusHandle,
+    /// The address last copied from the details, to say so.
+    copied: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -124,6 +140,9 @@ impl Conversation {
             decoding: HashSet::new(),
             requested: HashSet::new(),
             opening: Rc::default(),
+            details: false,
+            details_focus: cx.focus_handle(),
+            copied: None,
             _subscriptions: subscriptions,
         };
         this.reload(window, cx);
@@ -371,7 +390,198 @@ impl Conversation {
         }
     }
 
-    fn header(&self, window: &Window, cx: &App) -> impl IntoElement {
+    fn toggle_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.details {
+            self.close_details(window, cx);
+        } else {
+            self.details = true;
+            self.copied = None;
+            self.details_focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn close_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.details {
+            return;
+        }
+        self.details = false;
+        if let Some(composer) = &self.composer {
+            Composer::focus(composer, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn copy_address(&mut self, address: &str, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(address.to_owned()));
+        self.copied = Some(address.to_owned());
+        cx.notify();
+    }
+
+    /// The popover under the header, as in Messages' Details: the
+    /// conversation's picture and name, then each person in it.
+    fn details(&self, chat: &ChatRow, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = *cx.colors();
+        let m = cx.theme().metrics();
+        let faces = people::chat_faces(chat, &self.names, &self.photos);
+        let avatar = if faces.len() > 1 {
+            Avatar::group(faces, px(56.)).ring(colors.popover)
+        } else {
+            Avatar::new(faces.into_iter().next().unwrap_or(Face::Glyph), px(56.))
+        };
+        let service = people::chat_service(chat);
+        let service = if service.eq_ignore_ascii_case("SMS") {
+            "Text Message".to_owned()
+        } else {
+            service
+        };
+        let subtitle = if chat.is_group() {
+            format!("{} people · {service}", chat.participants.len() + 1)
+        } else {
+            service
+        };
+
+        let person = |ix: usize, address: &String| {
+            let name = self.names.full(address);
+            let shown = self.names.address(address);
+            let copied = self.copied.as_deref() == Some(address.as_str());
+            let address = address.clone();
+            let group: SharedString = format!("person-{ix}").into();
+            div()
+                .id(("person", ix))
+                .group(group.clone())
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(8.))
+                .py(px(6.))
+                .rounded(px(8.))
+                .cursor_pointer()
+                .hover(|d| d.bg(colors.sidebar_hover))
+                .child(Avatar::new(
+                    people::face(&self.names, &self.photos, &address),
+                    px(SMALL_AVATAR),
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_size(m.body()).truncate().child(name.clone()))
+                        .when(name != shown, |d| {
+                            d.child(
+                                div()
+                                    .text_size(m.caption())
+                                    .text_color(colors.text_secondary)
+                                    .truncate()
+                                    .child(shown),
+                            )
+                        }),
+                )
+                // "Copy" while the pointer is over the row, "Copied" after.
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(m.caption())
+                        .text_color(if copied {
+                            colors.text_secondary
+                        } else {
+                            gpui_kit::transparent_black()
+                        })
+                        .group_hover(group, move |s| s.text_color(colors.text_secondary))
+                        .child(if copied { "Copied" } else { "Copy" }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.copy_address(&address, cx)))
+        };
+
+        let panel = div()
+            .id("chat-details")
+            .key_context("ChatDetails")
+            .track_focus(&self.details_focus)
+            .on_action(
+                cx.listener(|this, _: &CloseDetails, window, cx| this.close_details(window, cx)),
+            )
+            .occlude()
+            .w(px(DETAILS_WIDTH))
+            .max_h(window.viewport_size().height * 0.7)
+            .overflow_y_scroll()
+            .p(px(12.))
+            .rounded(px(12.))
+            .bg(colors.popover)
+            .border_1()
+            .border_color(colors.popover_border)
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(4.))
+                    .pt(px(6.))
+                    .pb(px(10.))
+                    .child(avatar)
+                    .child(
+                        div()
+                            .pt(px(4.))
+                            .text_size(m.title())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_center()
+                            .child(self.names.chat_title(chat)),
+                    )
+                    .child(
+                        div()
+                            .text_size(m.caption())
+                            .text_color(colors.text_secondary)
+                            .child(subtitle),
+                    ),
+            )
+            .child(div().h(px(1.)).mb(px(6.)).bg(colors.separator))
+            .children(
+                chat.participants
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, a)| person(ix, a)),
+            );
+
+        // Over the whole window, so a click anywhere else closes it.
+        let backdrop = div()
+            .id("chat-details-backdrop")
+            .occlude()
+            .w(window.viewport_size().width)
+            .h(window.viewport_size().height)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.close_details(window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, window, cx| this.close_details(window, cx)),
+            );
+        div()
+            .absolute()
+            .top_full()
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(deferred(anchored().position(point(px(0.), px(0.))).child(backdrop)).priority(1))
+            .child(
+                div().w_0().child(
+                    deferred(
+                        anchored()
+                            .offset(point(px(-DETAILS_WIDTH / 2.), px(6.)))
+                            .snap_to_window_with_margin(px(8.))
+                            .child(panel),
+                    )
+                    .priority(2),
+                ),
+            )
+    }
+
+    fn header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = *cx.colors();
         let m = cx.theme().metrics();
         let (title, faces) = match &self.chat {
@@ -400,17 +610,32 @@ impl Conversation {
                 .border_b_1()
                 .border_color(colors.separator),
         )
-        .child(avatar)
-        .child(
+        .child(window_controls::not_title_bar(
             div()
+                .id("chat-details-button")
                 .flex()
+                .flex_col()
                 .items_center()
-                .gap(px(2.))
-                .text_size(m.caption())
-                .text_color(colors.text)
-                .child(title)
-                .child(icon(Icon::ChevronDown, px(9.)).text_color(colors.text_secondary)),
-        )
+                .gap(px(3.))
+                .px(px(8.))
+                .rounded(px(8.))
+                .cursor_pointer()
+                .child(avatar)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .text_size(m.caption())
+                        .text_color(colors.text)
+                        .child(title)
+                        .child(icon(Icon::ChevronDown, px(9.)).text_color(colors.text_secondary)),
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_details(window, cx))),
+        ))
+        .when_some(self.chat.as_ref().filter(|_| self.details), |d, chat| {
+            d.child(self.details(chat, window, cx))
+        })
         .children(window_controls::buttons(Side::Right, window, cx).map(|b| {
             div()
                 .absolute()

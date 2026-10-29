@@ -34,6 +34,7 @@ fn main() {
         runtime::Runtime::init(cx);
         shell::init(Some(shows), cx);
         ui::settings::init(cx);
+        ui::conversation::init(cx);
         spell::init(cx);
         if shell::open_window(cx).is_none() {
             cx.quit();
