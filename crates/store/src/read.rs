@@ -263,6 +263,16 @@ impl Store {
         finish_chats(&conn, rows)
     }
 
+    /// The ids of every unread chat.
+    pub fn unread_chats(&self) -> Result<HashSet<i64>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare_cached("SELECT id FROM chats WHERE unread = 1")?;
+        let ids = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
     pub fn chat(&self, id: i64) -> Result<Option<ChatRow>> {
         let conn = self.lock();
         let row = conn

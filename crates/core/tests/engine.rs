@@ -485,6 +485,58 @@ async fn wrong_password_stops_at_unauthorized() {
 }
 
 #[tokio::test]
+async fn reading_on_another_device_withdraws_the_notification() {
+    let server = MockServer::start(PASSWORD).await;
+    server.add_chat(&dm(demo::ALEX), None, &[demo::ALEX]);
+    let (engine, mut events, store) = synced(&server).await;
+    engine.view(None, false);
+
+    let m = server.receive(&dm(demo::ALEX), demo::ALEX, "are you around?");
+    wait_event(&mut events, |e| matches!(e, EngineEvent::Notify(_))).await;
+    let chat = store.chat_by_guid(&dm(demo::ALEX)).unwrap().unwrap();
+    assert!(chat.unread);
+
+    // Read on the phone: Messages records when, and the server says so.
+    server.update(&m.guid, false, |m| m.date_read = Some(bb_mock::now_ms()));
+    wait_event(
+        &mut events,
+        |e| matches!(e, EngineEvent::ChatRead { chat_id } if *chat_id == chat.id),
+    )
+    .await;
+    assert!(!store.chat(chat.id).unwrap().unwrap().unread);
+}
+
+#[tokio::test]
+async fn opening_a_chat_withdraws_a_tapback_notification() {
+    let server = MockServer::start(PASSWORD).await;
+    server.add_chat(&dm(demo::ALEX), None, &[demo::ALEX]);
+    let mine = server.insert_silently(&dm(demo::ALEX), None, "see you at 8", bb_mock::now_ms());
+    let (engine, mut events, store) = synced(&server).await;
+    engine.view(None, false);
+
+    // A tapback on my message notifies but leaves the chat read.
+    server.receive_with(
+        &dm(demo::ALEX),
+        demo::ALEX,
+        "Loved “see you at 8”",
+        |m| {
+            m.associated_message_guid = Some(format!("p:0/{}", mine.guid));
+            m.associated_message_type = Some("love".into());
+        },
+    );
+    wait_event(&mut events, |e| matches!(e, EngineEvent::Notify(_))).await;
+    let chat = store.chat_by_guid(&dm(demo::ALEX)).unwrap().unwrap();
+    assert!(!chat.unread);
+
+    engine.view(Some(chat.id), true);
+    wait_event(
+        &mut events,
+        |e| matches!(e, EngineEvent::ChatRead { chat_id } if *chat_id == chat.id),
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn tapbacks_resolve_and_aggregate() {
     let server = MockServer::start(PASSWORD).await;
     server.add_chat(&dm(demo::ALEX), None, &[demo::ALEX]);

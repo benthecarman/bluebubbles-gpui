@@ -173,8 +173,12 @@ clears after 60 s without an update.
   socket, with its activation token, so the window comes forward on
   Wayland.
 - Notifications are shown while the window is hidden or unfocused, and
-  for every chat except the open one while it has focus. Settings has a
-  test button that reports which notification server answered.
+  for every chat except the open one while it has focus. A chat's
+  notification is withdrawn when the chat is seen in the focused window
+  (tapbacks notify without making a chat unread), and when the chat goes
+  from unread to read for any reason, such as being read on the phone.
+  Settings has a test button that reports which notification server
+  answered.
 - A StatusNotifierItem puts the app in the top bar (GNOME needs the
   AppIndicator extension, which Ubuntu turns on). It has Open, Settings
   and Quit, and Mark All as Read and a red dot while conversations are

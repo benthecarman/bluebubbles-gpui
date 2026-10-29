@@ -167,8 +167,8 @@ pub enum EngineEvent {
         typing: bool,
     },
     Notify(Notification),
-    /// The chat was read (here or on another device): withdraw its
-    /// notifications.
+    /// The chat was read here or on another device, or seen in a focused
+    /// window: withdraw its notifications.
     ChatRead {
         chat_id: i64,
     },
@@ -317,6 +317,7 @@ impl Engine {
             read_due: HashMap::new(),
             viewing: None,
             focused: false,
+            unread: config.store.unread_chats().unwrap_or_default(),
             fetching_chats: HashSet::new(),
             loading_history: HashSet::new(),
             attachments_dir: config.attachments_dir,
@@ -484,6 +485,8 @@ struct Core {
     read_due: HashMap<String, Instant>,
     viewing: Option<i64>,
     focused: bool,
+    /// Chats unread after the last change, to see which a change read.
+    unread: HashSet<i64>,
     fetching_chats: HashSet<String>,
     loading_history: HashSet<i64>,
     attachments_dir: PathBuf,
@@ -585,6 +588,11 @@ impl Core {
                     let unread = self.store.chat(id).ok().flatten().is_some_and(|c| c.unread);
                     if unread {
                         self.mark_read(id);
+                    } else {
+                        // Its notifications go even when nothing was
+                        // unread: tapbacks notify without making the chat
+                        // unread.
+                        self.emit(EngineEvent::ChatRead { chat_id: id });
                     }
                 }
                 if focused && !was_focused {
@@ -1479,6 +1487,16 @@ impl Core {
         }
         for guid in &changes.incomplete_chats {
             self.fetch_chat(guid.clone());
+        }
+        // A chat read anywhere (here, on another device, or by a reply sent
+        // from one) loses its notifications.
+        if !changes.chats.is_empty()
+            && let Some(unread) = self.report("unread chats", self.store.unread_chats())
+        {
+            for &chat_id in self.unread.difference(&unread) {
+                self.emit(EngineEvent::ChatRead { chat_id });
+            }
+            self.unread = unread;
         }
         let inserted: Vec<MessageRow> = if changes.inserted.is_empty() {
             Vec::new()
