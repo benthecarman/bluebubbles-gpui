@@ -67,7 +67,10 @@ pub struct Bubble {
     pub link: Option<Link>,
     /// Sent from an iMessage app, such as Apple Cash.
     pub app: Option<AppMessage>,
-    /// Standing tapbacks, oldest first.
+    /// The part of the message the text, link or app card is, which
+    /// tapbacks and replies name.
+    pub part: i64,
+    /// Standing tapbacks on that part, oldest first.
     pub reactions: Vec<Reaction>,
     /// The message this one replies to.
     pub quote: Option<Quote>,
@@ -85,6 +88,10 @@ pub enum MediaKind {
 pub struct Media {
     pub kind: MediaKind,
     pub attachment: AttachmentRow,
+    /// The part of the message it is.
+    pub part: i64,
+    /// Standing tapbacks on it, oldest first.
+    pub reactions: Vec<Reaction>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -300,7 +307,11 @@ fn link(m: &MessageRow, text: Option<&str>) -> Option<Link> {
     })
 }
 
-fn reactions_on(m: &MessageRow, associated: &HashMap<String, Vec<MessageRow>>) -> Vec<Reaction> {
+/// The standing tapbacks on each part of a message.
+fn reactions_on(
+    m: &MessageRow,
+    associated: &HashMap<String, Vec<MessageRow>>,
+) -> Vec<(i64, Vec<Reaction>)> {
     let Some(on) = associated.get(&m.guid) else {
         return Vec::new();
     };
@@ -309,8 +320,53 @@ fn reactions_on(m: &MessageRow, associated: &HashMap<String, Vec<MessageRow>>) -
     parts.dedup();
     parts
         .into_iter()
-        .flat_map(|part| tapback::reactions(on, part))
+        .map(|part| (part, tapback::reactions(on, part)))
+        .filter(|(_, r)| !r.is_empty())
         .collect()
+}
+
+/// Which part of the message each attachment is, and the text's part:
+/// tapbacks and replies name the part they're on. The attributed body
+/// numbers its runs; without it, each attachment is a part in order and
+/// the text comes after them.
+struct Parts {
+    attachments: HashMap<String, i64>,
+    text: Option<i64>,
+}
+
+impl Parts {
+    fn of(m: &MessageRow) -> Self {
+        let mut parts = Self {
+            attachments: HashMap::new(),
+            text: None,
+        };
+        let runs = m
+            .attributed_body
+            .as_ref()
+            .and_then(|b| b.get(0).or(Some(b)))
+            .and_then(|b| b.get("runs"))
+            .and_then(|r| r.as_array());
+        for run in runs.into_iter().flatten() {
+            let attributes = &run["attributes"];
+            let Some(part) = attributes["__kIMMessagePartAttributeName"].as_i64() else {
+                continue;
+            };
+            match attributes["__kIMFileTransferGUIDAttributeName"].as_str() {
+                Some(guid) => {
+                    parts.attachments.insert(guid.to_owned(), part);
+                }
+                None => parts.text = Some(parts.text.map_or(part, |t| t.min(part))),
+            }
+        }
+        parts
+    }
+
+    fn attachment(&self, a: &AttachmentRow, index: usize) -> i64 {
+        self.attachments
+            .get(&a.guid)
+            .copied()
+            .unwrap_or(index as i64)
+    }
 }
 
 pub fn build<Tz: TimeZone>(rows: &[MessageRow], cx: &Context<'_, Tz>) -> Transcript
@@ -359,15 +415,40 @@ where
         if link.is_some() && text.as_deref().is_some_and(looks_like_url) {
             text = None;
         }
-        let media: Vec<Media> = m
+        let parts = Parts::of(m);
+        let mut media: Vec<Media> = m
             .attachments
             .iter()
-            .filter(|a| !a.hidden && !is_plugin_payload(a))
-            .map(|a| Media {
+            .enumerate()
+            .filter(|(_, a)| !a.hidden && !is_plugin_payload(a))
+            .map(|(i, a)| Media {
                 kind: media_kind(a),
                 attachment: a.clone(),
+                part: parts.attachment(a, i),
+                reactions: Vec::new(),
             })
             .collect();
+        let part = parts.text.unwrap_or(if media.is_empty() {
+            0
+        } else {
+            m.attachments.len() as i64
+        });
+        // Each tapback sits on its part; one on a part not shown here goes
+        // on the last thing that is.
+        let mut reactions = Vec::new();
+        let has_body = text.is_some() || link.is_some() || app.is_some();
+        for (on, mut rs) in reactions_on(m, cx.associated) {
+            let shown = media.iter().position(|x| x.part == on);
+            let on_media = match shown {
+                Some(i) if !(has_body && on == part) => Some(i),
+                _ if has_body => None,
+                _ => media.len().checked_sub(1),
+            };
+            match on_media {
+                Some(i) => media[i].reactions.append(&mut rs),
+                None => reactions.append(&mut rs),
+            }
+        }
         let jumbo = text.as_deref().is_some_and(jumbo) && media.is_empty();
         let quote = m
             .thread_originator_guid
@@ -404,7 +485,8 @@ where
             media,
             link,
             app,
-            reactions: reactions_on(m, cx.associated),
+            part,
+            reactions,
             quote,
             row: m.clone(),
         })));
@@ -697,6 +779,54 @@ mod tests {
         );
         assert_eq!(b.text.as_deref(), Some("look"));
         assert!(!b.jumbo);
+    }
+
+    #[test]
+    fn tapbacks_sit_on_the_part_they_are_on() {
+        let mut m = msg(1, Some("a"), "\u{fffc}nice", T0);
+        m.attachments = vec![attachment("p", "IMG_1.HEIC", None)];
+        let tapback = |id, part, kind: &str| {
+            let mut t = msg(id, None, "", T0 + 1000);
+            t.associated_guid = Some(format!("p:{part}/{}", m.guid));
+            t.associated_type = Some(kind.into());
+            t.associated_part = Some(part);
+            t
+        };
+        let on = |m: &MessageRow, tapbacks: Vec<MessageRow>| {
+            let associated = HashMap::from([(m.guid.clone(), tapbacks)]);
+            let t = build_full(
+                std::slice::from_ref(m),
+                false,
+                false,
+                &associated,
+                &HashMap::new(),
+            );
+            let b = bubbles(&t)[0].clone();
+            (
+                b.media[0].part,
+                b.media[0].reactions.len(),
+                b.part,
+                b.reactions.len(),
+            )
+        };
+        // Without an attributed body, the photo is part 0 and the text 1.
+        assert_eq!(on(&m, vec![tapback(2, 0, "love")]), (0, 1, 1, 0));
+        assert_eq!(on(&m, vec![tapback(2, 1, "like")]), (0, 0, 1, 1));
+        // The attributed body numbers them otherwise.
+        m.attributed_body = Some(serde_json::json!([{
+            "string": "nice\u{fffc}",
+            "runs": [
+                {"range": [0, 4], "attributes": {"__kIMMessagePartAttributeName": 0}},
+                {"range": [4, 1], "attributes": {
+                    "__kIMMessagePartAttributeName": 1,
+                    "__kIMFileTransferGUIDAttributeName": "p"
+                }}
+            ]
+        }]));
+        assert_eq!(on(&m, vec![tapback(2, 0, "love")]), (1, 0, 0, 1));
+        assert_eq!(on(&m, vec![tapback(2, 1, "love")]), (1, 1, 0, 0));
+        // A part that isn't shown goes on the text.
+        assert_eq!(on(&m, vec![tapback(2, 5, "love")]), (1, 0, 0, 1));
     }
 
     #[test]

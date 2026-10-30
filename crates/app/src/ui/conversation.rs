@@ -789,39 +789,43 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
     let failed = matches!(b.receipt, Some(Receipt::Failed));
     let id = b.row.id;
 
-    let mut content = div()
-        .relative()
-        .flex()
-        .flex_col()
-        .gap(px(4.))
-        .when(from_me, |d| d.items_end())
-        .when(!from_me, |d| d.items_start());
+    let stack = || {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .when(from_me, |d| d.items_end())
+            .when(!from_me, |d| d.items_start())
+    };
+    let mut content = stack();
     for m in &b.media {
-        content = content.child(media_view(m, rcx, cx));
+        let view = media_view(m, rcx, cx);
+        content = content.child(part(view, m.part, &m.reactions, None, b, rcx, cx));
     }
+    let mut body = stack();
     if let Some(link) = &b.link {
-        content = content.child(link_card(link, rcx, cx));
+        body = body.child(link_card(link, rcx, cx));
     }
     if let Some(app) = &b.app {
-        content = content.child(app_card(app, cx));
+        body = body.child(app_card(app, cx));
     }
     if let Some(text) = &b.text {
         if b.jumbo {
-            content = content.child(
+            body = body.child(
                 div()
                     .text_size(m.jumbo_emoji())
                     .line_height(m.jumbo_emoji() * 1.15)
                     .child(text.clone()),
             );
         } else {
-            let mut body = div()
+            let mut words = div()
                 .px(m.bubble_pad_x())
                 .py(m.bubble_pad_y())
                 .text_size(m.message_text())
                 .line_height(m.message_line())
                 .text_color(fg);
             if let Some(subject) = b.row.subject.as_deref().filter(|s| !s.trim().is_empty()) {
-                body = body.child(
+                words = words.child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(subject.to_owned()),
@@ -829,7 +833,7 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
             }
             let links = transcript::links(text);
             if links.is_empty() {
-                body = body.child(text.clone());
+                words = words.child(text.clone());
             } else {
                 let underline = HighlightStyle {
                     underline: Some(UnderlineStyle {
@@ -842,7 +846,7 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
                 let styled = StyledText::new(text.clone())
                     .with_highlights(links.iter().map(|(r, _)| (r.clone(), underline)));
                 let urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
-                body = body.child(InteractiveText::new(("text", id as u64), styled).on_click(
+                words = words.child(InteractiveText::new(("text", id as u64), styled).on_click(
                     links.into_iter().map(|(r, _)| r).collect(),
                     move |ix, _, cx| {
                         if let Some(url) = urls.get(ix) {
@@ -851,8 +855,13 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
                     },
                 ));
             }
-            content = content.child(Bubble::new(fill, m.bubble_radius(), tail).child(body));
+            body = body.child(Bubble::new(fill, m.bubble_radius(), tail).child(words));
         }
+    }
+
+    if b.text.is_some() || b.link.is_some() || b.app.is_some() {
+        let copy = b.text.clone();
+        content = content.child(part(body, b.part, &b.reactions, copy, b, rcx, cx));
     }
 
     let column = div()
@@ -871,24 +880,10 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
                     .child(name),
             )
         })
-        // Above the bubble, outside it: the tapback badge sits on the
-        // bubble, not on the quote.
         .when_some(b.quote.as_ref(), |d, quote| {
             d.child(div().pb(px(4.)).child(quote_view(quote, cx)))
         })
-        .child(with_menu(
-            content
-                .id(("content", id as u64))
-                .when(pending, |d| d.opacity(0.65))
-                .when(!b.reactions.is_empty(), |d| {
-                    // Room for the badge, between the bubble and whatever
-                    // is above it.
-                    d.mt(px(BADGE_ROOM))
-                        .child(badge(&b.reactions, from_me, &rcx.names, cx))
-                }),
-            b,
-            rcx,
-        ))
+        .child(content.when(pending, |d| d.opacity(0.65)))
         .when(
             b.row.date_edited.is_some() && b.row.date_retracted.is_none(),
             |d| {
@@ -976,15 +971,47 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
         .into_any_element()
 }
 
-/// The bubble's right-click menu: Copy, and where the server has the
+/// One part of a message (a photo, a file, or the text) with its tapback
+/// badge on its top corner, as Messages draws them, and its right-click
+/// menu.
+fn part(
+    view: impl IntoElement,
+    part: i64,
+    reactions: &[Reaction],
+    copy: Option<String>,
+    b: &Item_,
+    rcx: &RenderCx,
+    cx: &App,
+) -> AnyElement {
+    let content =
+        div()
+            .id(("part", part as u64))
+            .relative()
+            .child(view)
+            .when(!reactions.is_empty(), |d| {
+                // Room for the badge, between the part and whatever is above
+                // it.
+                d.mt(px(BADGE_ROOM))
+                    .child(badge(reactions, b.row.is_from_me, &rcx.names, cx))
+            });
+    with_menu(content, part, reactions, copy, b, rcx)
+}
+
+/// A part's right-click menu: Copy, and where the server has the
 /// Private API, the tapbacks and Reply. Without anything to offer, no
 /// menu.
-fn with_menu(content: Stateful<Div>, b: &Item_, rcx: &RenderCx) -> AnyElement {
+fn with_menu(
+    content: Stateful<Div>,
+    part: i64,
+    reactions: &[Reaction],
+    text: Option<String>,
+    b: &Item_,
+    rcx: &RenderCx,
+) -> AnyElement {
     // Tapbacks and replies show greyed out without the Private API, which
     // the server needs to send them, so it's clear why they don't work.
     let actionable = !b.row.is_pending() && !b.row.is_failed();
     let can_act = rcx.private_api && actionable;
-    let text = b.text.clone();
     let failed = b.row.is_from_me && b.row.is_failed();
     // A message the server never stored can be thrown away.
     let local = b
@@ -1001,10 +1028,10 @@ fn with_menu(content: Stateful<Div>, b: &Item_, rcx: &RenderCx) -> AnyElement {
     let composer = rcx.composer.clone();
     let chat_guid = rcx.chat_guid.clone();
     let guid = b.row.guid.clone();
-    let mine = tapback::mine(&b.reactions).cloned();
+    let mine = tapback::mine(reactions).cloned();
     let reply = ReplyTo {
         guid: guid.clone(),
-        part: 0,
+        part,
         sender: match &b.row.sender {
             _ if b.row.is_from_me => "You".into(),
             Some(s) => rcx.names.short(s),
@@ -1051,7 +1078,7 @@ fn with_menu(content: Stateful<Div>, b: &Item_, rcx: &RenderCx) -> AnyElement {
                                     session.read(cx).engine.react(
                                         &chat_guid,
                                         &guid,
-                                        0,
+                                        part,
                                         t.clone(),
                                         on,
                                     );

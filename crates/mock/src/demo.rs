@@ -149,6 +149,15 @@ pub fn seed_demo(server: &MockServer) {
         "like",
         at(2 * HOUR - 2 * MIN),
     );
+    // On the photo, part 0, not the caption under it.
+    tapback(
+        server,
+        trip,
+        None,
+        &trip_ids[5],
+        "emphasize",
+        at(2 * HOUR + MIN),
+    );
 
     // Mom: a direct chat with history over several days, read receipt.
     let mut seq = vec![

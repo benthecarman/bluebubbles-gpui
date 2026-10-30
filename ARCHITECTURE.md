@@ -127,7 +127,8 @@ preview, time, unread dot) and a transcript with blue (iMessage), green
 (SMS) and gray bubbles. Consecutive messages from a sender within a minute
 group together and only the last has a tail. Timestamps separate gaps over
 30 minutes. "Delivered" and "Read" sit under the last message they apply
-to. Tapbacks open from right-click or double-click. Replies show the
+to. Tapbacks open from right-click on the photo, file or text they're
+for, and their badge sits on that part's corner. Replies show the
 quoted message above. A typing bubble animates while someone types and
 clears after 60 s without an update.
 
