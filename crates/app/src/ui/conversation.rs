@@ -275,16 +275,21 @@ impl Conversation {
             let photos = b
                 .media
                 .iter()
-                .filter(|m| m.kind == MediaKind::Image)
-                .map(|m| &m.attachment)
-                .chain(b.link.as_ref().and_then(|l| l.image.as_ref()));
-            for a in photos {
+                .filter(|m| matches!(m.kind, MediaKind::Image | MediaKind::Video))
+                .map(|m| (&m.attachment, m.kind == MediaKind::Video))
+                .chain(
+                    b.link
+                        .as_ref()
+                        .and_then(|l| l.image.as_ref())
+                        .map(|a| (a, false)),
+                );
+            for (a, video) in photos {
                 match on_disk(a) {
                     Some(path) => {
                         if !self.thumbs.contains_key(&a.guid)
                             && self.decoding.insert(a.guid.clone())
                         {
-                            self.decode(a.guid.clone(), path, cx);
+                            self.decode(a.guid.clone(), path, video, cx);
                         }
                     }
                     None => {
@@ -307,8 +312,14 @@ impl Conversation {
         }
     }
 
-    fn decode(&mut self, guid: String, path: PathBuf, cx: &mut Context<Self>) {
-        let task = cx.background_spawn(async move { media::thumbnail(&path) });
+    fn decode(&mut self, guid: String, path: PathBuf, video: bool, cx: &mut Context<Self>) {
+        let task = cx.background_spawn(async move {
+            if video {
+                media::video_frame(&path)
+            } else {
+                media::thumbnail(&path)
+            }
+        });
         cx.spawn(async move |this, cx| {
             let thumb = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -1135,17 +1146,22 @@ fn tapback_name(t: &Tapback) -> String {
 fn media_view(m: &Media, rcx: &RenderCx, cx: &App) -> AnyElement {
     let a = &m.attachment;
     let thumb = rcx.thumbs.get(&a.guid);
-    if m.kind == MediaKind::Image && !matches!(thumb, Some(None)) {
-        return photo(a, thumb.cloned().flatten(), rcx, cx);
+    // A video that can't show a frame (no ffmpeg) is a card instead.
+    let visual = matches!(m.kind, MediaKind::Image | MediaKind::Video);
+    if visual && !matches!(thumb, Some(None)) {
+        let video = m.kind == MediaKind::Video;
+        return photo(a, thumb.cloned().flatten(), video, rcx, cx);
     }
     file_card(m, rcx, cx)
 }
 
 /// A photo at its own aspect ratio, or a grey box of that size while it
-/// downloads. Clicking opens the full file.
+/// downloads. A video is its first frame with a play button. Clicking
+/// opens the full file.
 fn photo(
     a: &AttachmentRow,
     thumb: Option<Arc<RenderImage>>,
+    video: bool,
     rcx: &RenderCx,
     cx: &App,
 ) -> AnyElement {
@@ -1178,7 +1194,28 @@ fn photo(
                     .rounded(radius)
                     .object_fit(ObjectFit::Cover),
             ),
+            None if video => d,
             None => d.child(icon(Icon::Photo, px(28.)).text_color(colors.text_tertiary)),
+        })
+        .when(video, |d| {
+            d.relative().child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .size(px(48.))
+                            .rounded_full()
+                            .bg(gpui_kit::black().opacity(0.45))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(Icon::Play, px(22.)).text_color(gpui_kit::white())),
+                    ),
+            )
         })
         .on_click(move |_, _, cx| {
             let _ = this.update(cx, |this, cx| this.open_attachment(&attachment, cx));
@@ -1186,7 +1223,7 @@ fn photo(
         .into_any_element()
 }
 
-/// Videos, audio and other files: a card that downloads the file when
+/// Audio, other files, and videos without a frame: a card that downloads the file when
 /// clicked and opens it in the system's app (no player runs in here).
 fn file_card(m: &Media, rcx: &RenderCx, cx: &App) -> AnyElement {
     let colors = *cx.colors();

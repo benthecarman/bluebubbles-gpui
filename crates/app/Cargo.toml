@@ -47,6 +47,8 @@ extended-description = "Native desktop client for the BlueBubbles Server: iMessa
 section = "net"
 priority = "optional"
 depends = "$auto, libvulkan1, libxkbcommon-x11-0, libwayland-client0, libfontconfig1, gnome-keyring | kwalletmanager | keepassxc"
+# Draws a video's first frame in the transcript.
+recommends = "ffmpeg"
 assets = [
     ["target/release/bluebubbles-gpui", "usr/bin/", "755"],
     ["../../packaging/linux/bluebubbles-gpui.desktop", "usr/share/applications/", "644"],

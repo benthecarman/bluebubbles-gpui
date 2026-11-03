@@ -1,12 +1,14 @@
-//! Photos in the transcript: decoded and scaled down off the UI thread,
-//! once per file, so a chat full of 12-megapixel photos holds small
-//! textures. The full file stays on disk for opening.
+//! Photos and videos in the transcript: decoded and scaled down off the
+//! UI thread, once per file, so a chat full of 12-megapixel photos holds
+//! small textures. A video shows its first frame. The full file stays on
+//! disk for opening.
 
 use gpui_kit::RenderImage;
 use image::codecs::gif::GifDecoder;
 use image::{AnimationDecoder, DynamicImage, Frame, ImageDecoder, ImageReader};
 use std::io::Cursor;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 /// Longest side of a decoded thumbnail, in pixels: two device pixels per
@@ -54,6 +56,39 @@ pub fn thumbnail(path: &Path) -> Option<Arc<RenderImage>> {
         image = image.thumbnail(THUMB_MAX, THUMB_MAX);
     }
     let mut rgba = image.to_rgba8();
+    to_bgra(&mut rgba);
+    Some(Arc::new(RenderImage::new([Frame::new(rgba)])))
+}
+
+/// The first frame of a video, upright and no larger than
+/// [`THUMB_MAX`], from `ffmpeg` (the .deb recommends it). `None` without
+/// it, so the video shows as a file card.
+pub fn video_frame(path: &Path) -> Option<Arc<RenderImage>> {
+    let fit = format!(
+        "scale='min({THUMB_MAX},iw)':'min({THUMB_MAX},ih)':force_original_aspect_ratio=decrease"
+    );
+    let out = Command::new("ffmpeg")
+        .args(["-v", "error", "-nostdin", "-i"])
+        .arg(path)
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            &fit,
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "png",
+            "-",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut rgba = image::load_from_memory(&out.stdout).ok()?.to_rgba8();
     to_bgra(&mut rgba);
     Some(Arc::new(RenderImage::new([Frame::new(rgba)])))
 }
@@ -119,6 +154,39 @@ mod tests {
         assert_eq!((size.width.0, size.height.0), (640, 320));
         // Red in RGBA is blue-first in BGRA.
         assert_eq!(&thumb.as_bytes(0).unwrap()[..4], &[0, 0, 255, 255]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_video_shows_its_first_frame() {
+        let dir = std::env::temp_dir().join(format!("bb-video-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clip.mov");
+        let made = Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=red:s=1280x720:d=1",
+            ])
+            .args(["-c:v", "mjpeg"])
+            .arg(&path)
+            .status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("skipped: no ffmpeg");
+            return;
+        }
+        let frame = video_frame(&path).unwrap();
+        let size = frame.size(0);
+        assert_eq!((size.width.0, size.height.0), (640, 360));
+        let bgra = frame.as_bytes(0).unwrap();
+        assert!(bgra[2] > 200 && bgra[0] < 60, "{:?}", &bgra[..4]);
+        // Not a video: no frame, so it falls back to a card.
+        std::fs::write(&path, b"not a video").unwrap();
+        assert!(video_frame(&path).is_none());
         std::fs::remove_dir_all(dir).ok();
     }
 

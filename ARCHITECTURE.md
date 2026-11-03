@@ -160,7 +160,10 @@ clears after 60 s without an update.
   Other apps show their caption and name. Previews and notifications
   say "Apple Cash: $20.00 Payment".
 - Images are fetched once into a disk cache and decoded off the UI
-  thread. HEIC photos are requested from the server as JPEG.
+  thread. HEIC photos are requested from the server as JPEG. Videos
+  show their first frame with a play button, taken by `ffmpeg` (the
+  .deb recommends it); without it they are a file card. Clicking either
+  opens the file in the system's app.
 - Clicking the name or picture above a conversation opens its details,
   a popover like Messages' Details: the conversation's picture, name and
   service, then each person in it with their address. Clicking a person
