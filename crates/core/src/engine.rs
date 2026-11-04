@@ -222,7 +222,7 @@ enum Command {
         active: bool,
     },
     LoadOlder(i64),
-    Download(String),
+    Download(Vec<String>),
     View {
         chat_id: Option<i64>,
         focused: bool,
@@ -424,8 +424,16 @@ impl Engine {
 
     /// Fetches an attachment into the disk cache, retrying while the Mac
     /// hasn't got it yet. The message changes once the file is there.
+    /// One asked for while others wait goes first.
     pub fn download(&self, attachment_guid: &str) {
-        self.command(Command::Download(attachment_guid.to_owned()));
+        self.command(Command::Download(vec![attachment_guid.to_owned()]));
+    }
+
+    /// Fetches several, the last first: pass them oldest to newest.
+    pub fn download_all(&self, attachment_guids: Vec<String>) {
+        if !attachment_guids.is_empty() {
+            self.command(Command::Download(attachment_guids));
+        }
     }
 
     /// What the user is looking at: incoming messages there are marked
@@ -579,7 +587,7 @@ impl Core {
             Command::MarkUnread(chat_id) => self.mark_unread(chat_id),
             Command::Composing { chat_guid, active } => self.composing(chat_guid, active),
             Command::LoadOlder(chat_id) => self.load_older(chat_id),
-            Command::Download(guid) => self.download(guid),
+            Command::Download(guids) => self.download(guids),
             Command::View { chat_id, focused } => {
                 let was_focused = self.focused;
                 self.viewing = chat_id;
@@ -936,11 +944,17 @@ impl Core {
         });
     }
 
-    fn download(&mut self, guid: String) {
-        if !self.downloads.begin(&guid) {
-            return;
+    fn download(&mut self, guids: Vec<String>) {
+        for guid in &guids {
+            self.downloads.begin(guid);
         }
-        self.fetch_attachment(guid);
+        self.start_downloads();
+    }
+
+    fn start_downloads(&mut self) {
+        while let Some(guid) = self.downloads.next() {
+            self.fetch_attachment(guid);
+        }
     }
 
     fn fetch_attachment(&mut self, guid: String) {
@@ -1022,6 +1036,7 @@ impl Core {
                 tracing::debug!("downloading an attachment (retry: {retry}): {e}");
             }
         }
+        self.start_downloads();
     }
 
     // Sync.
@@ -1587,9 +1602,8 @@ impl Core {
     fn on_tick(&mut self) {
         let now = Instant::now();
 
-        for guid in self.downloads.due(now) {
-            self.fetch_attachment(guid);
-        }
+        self.downloads.retry_due(now);
+        self.start_downloads();
 
         let expired: Vec<i64> = self
             .typing_in

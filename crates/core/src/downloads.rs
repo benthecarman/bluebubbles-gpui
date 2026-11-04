@@ -2,31 +2,47 @@
 //! the Mac, so a failed download is retried with backoff. A finished one is
 //! written to the disk cache under its GUID and recorded in the store,
 //! which re-renders its bubble.
+//!
+//! A few run at once and the last asked for goes first: opening a chat
+//! asks for its photos oldest to newest, so the ones on screen at the
+//! bottom come first instead of sharing the connection with every photo
+//! further up, and a newly opened chat goes ahead of the last one.
 
 use bb_store::AttachmentRow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::Instant;
 
 /// Attempts before giving up; asking again starts over.
 const MAX_ATTEMPTS: u32 = 6;
+/// Downloads at once.
+pub(crate) const PARALLEL: usize = 3;
 
-/// Downloads in flight or waiting to retry, by attachment GUID.
+/// Downloads waiting, in flight or waiting to retry, by attachment GUID.
 #[derive(Default)]
 pub(crate) struct Downloads {
     pending: HashMap<String, Pending>,
+    /// Waiting for a free slot; the last is next.
+    queue: Vec<String>,
+    running: HashSet<String>,
 }
 
 struct Pending {
     attempts: u32,
-    /// `None` while a request is in flight.
+    /// `None` while waiting or in flight.
     retry_at: Option<Instant>,
 }
 
 impl Downloads {
-    /// Claims `guid` for a new download, unless one is already under way.
+    /// Asks for `guid`. One already waiting moves to the front of the
+    /// queue; returns whether this is a new download.
     pub fn begin(&mut self, guid: &str) -> bool {
+        if let Some(i) = self.queue.iter().position(|g| g == guid) {
+            let g = self.queue.remove(i);
+            self.queue.push(g);
+            return false;
+        }
         if self.pending.contains_key(guid) {
             return false;
         }
@@ -37,15 +53,28 @@ impl Downloads {
                 retry_at: None,
             },
         );
+        self.queue.push(guid.to_owned());
         true
     }
 
+    /// The next download to start, while fewer than [`PARALLEL`] run.
+    pub fn next(&mut self) -> Option<String> {
+        if self.running.len() >= PARALLEL {
+            return None;
+        }
+        let guid = self.queue.pop()?;
+        self.running.insert(guid.clone());
+        Some(guid)
+    }
+
     pub fn finished(&mut self, guid: &str) {
+        self.running.remove(guid);
         self.pending.remove(guid);
     }
 
     /// Records a failed attempt; returns whether it will be retried.
     pub fn failed(&mut self, guid: &str, now: Instant, base: Duration) -> bool {
+        self.running.remove(guid);
         let Some(p) = self.pending.get_mut(guid) else {
             return false;
         };
@@ -58,16 +87,15 @@ impl Downloads {
         true
     }
 
-    /// Downloads whose retry is due; they count as in flight again.
-    pub fn due(&mut self, now: Instant) -> Vec<String> {
-        let mut due = Vec::new();
+    /// Queues the downloads whose retry is due, behind the ones already
+    /// waiting.
+    pub fn retry_due(&mut self, now: Instant) {
         for (guid, p) in &mut self.pending {
             if p.retry_at.is_some_and(|at| at <= now) {
                 p.retry_at = None;
-                due.push(guid.clone());
+                self.queue.insert(0, guid.clone());
             }
         }
-        due
     }
 }
 
@@ -165,18 +193,44 @@ mod tests {
         let base = Duration::from_secs(1);
         let now = Instant::now();
         let mut d = Downloads::default();
+        let due = |d: &mut Downloads, at| {
+            d.retry_due(at);
+            d.next()
+        };
         assert!(d.begin("g"));
         assert!(!d.begin("g"));
+        assert_eq!(d.next().as_deref(), Some("g"));
         assert!(d.failed("g", now, base));
-        assert!(d.due(now).is_empty());
-        assert_eq!(d.due(now + Duration::from_secs(1)), vec!["g".to_owned()]);
+        assert_eq!(due(&mut d, now), None);
+        assert_eq!(
+            due(&mut d, now + Duration::from_secs(1)).as_deref(),
+            Some("g")
+        );
         assert!(d.failed("g", now, base));
-        assert!(d.due(now + Duration::from_secs(1)).is_empty());
-        assert_eq!(d.due(now + Duration::from_secs(2)).len(), 1);
+        assert_eq!(due(&mut d, now + Duration::from_secs(1)), None);
+        assert!(due(&mut d, now + Duration::from_secs(2)).is_some());
         for _ in 2..MAX_ATTEMPTS - 1 {
             assert!(d.failed("g", now, base));
         }
         assert!(!d.failed("g", now, base));
         assert!(d.begin("g"), "asking again starts over");
+    }
+
+    #[test]
+    fn a_few_at_once_and_the_newest_first() {
+        let mut d = Downloads::default();
+        for g in ["old", "a", "b", "c", "new"] {
+            d.begin(g);
+        }
+        let started: Vec<String> = std::iter::from_fn(|| d.next()).collect();
+        assert_eq!(started, ["new", "c", "b"]);
+        assert_eq!(started.len(), PARALLEL);
+        // Asking again for a waiting one moves it up.
+        d.begin("old");
+        d.finished("new");
+        assert_eq!(d.next().as_deref(), Some("old"));
+        assert_eq!(d.next(), None);
+        d.finished("c");
+        assert_eq!(d.next().as_deref(), Some("a"));
     }
 }

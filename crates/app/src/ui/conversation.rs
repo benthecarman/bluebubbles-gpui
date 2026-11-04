@@ -264,10 +264,13 @@ impl Conversation {
     }
 
     /// Downloads the photos in the transcript, decodes the ones on disk,
-    /// and opens files that were clicked before they arrived.
+    /// and opens files that were clicked before they arrived. The newest,
+    /// at the bottom where the transcript opens, go first.
     fn fetch_media(&mut self, cx: &mut Context<Self>) {
         let engine = self.session.read(cx).engine.clone();
         let transcript = self.transcript.clone();
+        let mut wanted = Vec::new();
+        let mut decode = Vec::new();
         for item in &transcript.items {
             let Item::Bubble(b) = item else {
                 continue;
@@ -289,14 +292,14 @@ impl Conversation {
                         if !self.thumbs.contains_key(&a.guid)
                             && self.decoding.insert(a.guid.clone())
                         {
-                            self.decode(a.guid.clone(), path, video, cx);
+                            decode.push((a.guid.clone(), path, video));
                         }
                     }
                     None => {
                         if a.total_bytes.unwrap_or(0) <= AUTO_DOWNLOAD_MAX
                             && self.requested.insert(a.guid.clone())
                         {
-                            engine.download(&a.guid);
+                            wanted.push(a.guid.clone());
                         }
                     }
                 }
@@ -309,6 +312,10 @@ impl Conversation {
                     cx.open_with_system(&path);
                 }
             }
+        }
+        engine.download_all(wanted);
+        for (guid, path, video) in decode.into_iter().rev() {
+            self.decode(guid, path, video, cx);
         }
     }
 
