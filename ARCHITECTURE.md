@@ -160,7 +160,11 @@ clears after 60 s without an update.
   Other apps show their caption and name. Previews and notifications
   say "Apple Cash: $20.00 Payment".
 - Images are fetched once into a disk cache and decoded off the UI
-  thread. HEIC photos are requested from the server as JPEG. Videos
+  thread, with a scaled-down copy kept beside each so opening a chat
+  again doesn't decode the full photo. Three downloads run at once, the
+  last asked for first, so a chat's newest photos, which are on screen,
+  come before older ones. HEIC photos are requested from the server as
+  JPEG. Videos
   show their first frame with a play button, taken by `ffmpeg` (the
   .deb recommends it); without it they are a file card. Clicking either
   opens the file in the system's app.

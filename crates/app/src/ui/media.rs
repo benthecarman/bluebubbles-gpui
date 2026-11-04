@@ -1,13 +1,14 @@
 //! Photos and videos in the transcript: decoded and scaled down off the
 //! UI thread, once per file, so a chat full of 12-megapixel photos holds
-//! small textures. A video shows its first frame. The full file stays on
-//! disk for opening.
+//! small textures. A video shows its first frame. The scaled-down copy is
+//! kept beside the file, so opening the chat again reads that instead of
+//! the full photo. The full file stays on disk for opening.
 
 use gpui_kit::RenderImage;
 use image::codecs::gif::GifDecoder;
-use image::{AnimationDecoder, DynamicImage, Frame, ImageDecoder, ImageReader};
+use image::{AnimationDecoder, DynamicImage, Frame, ImageDecoder, ImageFormat, ImageReader};
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -36,13 +37,23 @@ pub fn display_size(width: Option<i64>, height: Option<i64>) -> (f32, f32) {
 /// Decodes `path` into a texture-ready image no larger than [`THUMB_MAX`],
 /// upright per its EXIF orientation. GIFs keep their animation.
 pub fn thumbnail(path: &Path) -> Option<Arc<RenderImage>> {
+    if let Some(image) = read_cached(path) {
+        return Some(render(image));
+    }
     let bytes = std::fs::read(path).ok()?;
     if bytes.starts_with(b"GIF8")
         && let Some(frames) = gif_frames(&bytes)
     {
         return Some(Arc::new(RenderImage::new(frames)));
     }
-    let mut decoder = ImageReader::new(Cursor::new(&bytes))
+    let image = decode(&bytes)?;
+    save_cached(&image, path);
+    Some(render(image))
+}
+
+/// The photo in `bytes`, upright and no larger than [`THUMB_MAX`].
+fn decode(bytes: &[u8]) -> Option<DynamicImage> {
+    let mut decoder = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?
         .into_decoder()
@@ -55,15 +66,57 @@ pub fn thumbnail(path: &Path) -> Option<Arc<RenderImage>> {
     if image.width() > THUMB_MAX || image.height() > THUMB_MAX {
         image = image.thumbnail(THUMB_MAX, THUMB_MAX);
     }
+    Some(image)
+}
+
+fn render(image: DynamicImage) -> Arc<RenderImage> {
     let mut rgba = image.to_rgba8();
     to_bgra(&mut rgba);
-    Some(Arc::new(RenderImage::new([Frame::new(rgba)])))
+    Arc::new(RenderImage::new([Frame::new(rgba)]))
+}
+
+/// Where the scaled-down copy of `path` is kept: beside it, as
+/// `<name>.thumb`.
+fn cached(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".thumb");
+    path.with_file_name(name)
+}
+
+fn read_cached(path: &Path) -> Option<DynamicImage> {
+    let bytes = std::fs::read(cached(path)).ok()?;
+    ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .decode()
+        .ok()
+}
+
+/// Keeps `image` as `path`'s scaled-down copy: a JPEG, or a PNG where it
+/// has transparency. Best effort; without it the next open decodes the
+/// file again.
+fn save_cached(image: &DynamicImage, path: &Path) {
+    let to = cached(path);
+    let mut part = to.clone().into_os_string();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let saved = if image.color().has_alpha() {
+        image.save_with_format(&part, ImageFormat::Png)
+    } else {
+        DynamicImage::ImageRgb8(image.to_rgb8()).save_with_format(&part, ImageFormat::Jpeg)
+    };
+    if saved.is_err() || std::fs::rename(&part, &to).is_err() {
+        std::fs::remove_file(&part).ok();
+    }
 }
 
 /// The first frame of a video, upright and no larger than
 /// [`THUMB_MAX`], from `ffmpeg` (the .deb recommends it). `None` without
 /// it, so the video shows as a file card.
 pub fn video_frame(path: &Path) -> Option<Arc<RenderImage>> {
+    if let Some(image) = read_cached(path) {
+        return Some(render(image));
+    }
     let fit = format!(
         "scale='min({THUMB_MAX},iw)':'min({THUMB_MAX},ih)':force_original_aspect_ratio=decrease"
     );
@@ -88,9 +141,9 @@ pub fn video_frame(path: &Path) -> Option<Arc<RenderImage>> {
     if !out.status.success() {
         return None;
     }
-    let mut rgba = image::load_from_memory(&out.stdout).ok()?.to_rgba8();
-    to_bgra(&mut rgba);
-    Some(Arc::new(RenderImage::new([Frame::new(rgba)])))
+    let image = image::load_from_memory(&out.stdout).ok()?;
+    save_cached(&image, path);
+    Some(render(image))
 }
 
 fn gif_frames(bytes: &[u8]) -> Option<Vec<Frame>> {
@@ -154,6 +207,23 @@ mod tests {
         assert_eq!((size.width.0, size.height.0), (640, 320));
         // Red in RGBA is blue-first in BGRA.
         assert_eq!(&thumb.as_bytes(0).unwrap()[..4], &[0, 0, 255, 255]);
+        // The scaled-down copy is kept, a PNG since the photo has an alpha
+        // channel, and read next time instead of the photo.
+        let copy = cached(&path);
+        assert!(std::fs::read(&copy).unwrap().starts_with(b"\x89PNG"));
+        std::fs::write(&path, b"no longer a photo").unwrap();
+        let again = thumbnail(&path).unwrap();
+        assert_eq!(again.size(0), size);
+        assert_eq!(&again.as_bytes(0).unwrap()[..4], &[0, 0, 255, 255]);
+        // An opaque photo's copy is a JPEG.
+        let opaque = dir.join("opaque.png");
+        image::RgbImage::new(800, 800).save(&opaque).unwrap();
+        thumbnail(&opaque).unwrap();
+        assert!(
+            std::fs::read(cached(&opaque))
+                .unwrap()
+                .starts_with(&[0xff, 0xd8])
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -180,6 +250,8 @@ mod tests {
             return;
         }
         let frame = video_frame(&path).unwrap();
+        assert!(cached(&path).exists());
+        std::fs::remove_file(cached(&path)).unwrap();
         let size = frame.size(0);
         assert_eq!((size.width.0, size.height.0), (640, 360));
         let bgra = frame.as_bytes(0).unwrap();
