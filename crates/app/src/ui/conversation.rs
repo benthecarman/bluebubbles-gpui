@@ -903,7 +903,7 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
         })
         .child(content.when(pending, |d| d.opacity(0.65)))
         .when(
-            b.row.date_edited.is_some() && b.row.date_retracted.is_none(),
+            b.row.date_edited.is_some() && b.row.unsent_parts().is_empty(),
             |d| {
                 d.child(
                     div()

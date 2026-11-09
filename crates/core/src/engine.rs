@@ -1554,7 +1554,7 @@ impl Core {
     fn notify(&self, messages: &[&MessageRow]) {
         for m in messages {
             // Group events don't notify; tapbacks only on my messages.
-            if m.item_type != 0 || m.date_retracted.is_some() {
+            if m.item_type != 0 || m.is_unsent() {
                 continue;
             }
             if let Some(target) = &m.associated_guid {

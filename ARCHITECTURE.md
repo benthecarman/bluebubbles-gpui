@@ -85,7 +85,10 @@ it dirty and it runs once more afterwards. Nothing skips it.
   `date_retracted` changed since the last catch-up (minus an overlap).
   Receipts, edits and unsends made while offline are not lost. Edit and
   retract dates exist only on macOS 13+, so the query adapts to
-  `/server/info`'s `os_version`.
+  `/server/info`'s `os_version`. Messages rarely sets the retract date:
+  an unsend sets the edit date and lists the unsent parts in
+  `messageSummaryInfo` (`retractedParts`), and a message with no parts
+  left shows as "You unsent a message".
 - **Notifications** come from the store, not from the socket: a message
   notifies once (a `notified` flag in its row), whether it arrived by
   socket or by catch-up, as long as it is newer than the last time the

@@ -131,7 +131,7 @@ fn same_sender(a: &MessageRow, b: &MessageRow) -> bool {
 }
 
 fn is_event(m: &MessageRow) -> bool {
-    m.item_type != 0 || m.date_retracted.is_some()
+    m.item_type != 0 || m.is_unsent()
 }
 
 fn kind(m: &MessageRow, chat_service: &str) -> Kind {
@@ -433,6 +433,12 @@ where
         } else {
             m.attachments.len() as i64
         });
+        // Parts unsent from a message that still has others.
+        let unsent = m.unsent_parts();
+        media.retain(|x| !unsent.contains(&x.part));
+        if unsent.contains(&part) {
+            text = None;
+        }
         // Each tapback sits on its part; one on a part not shown here goes
         // on the last thing that is.
         let mut reactions = Vec::new();
@@ -490,6 +496,14 @@ where
             quote,
             row: m.clone(),
         })));
+        if !unsent.is_empty() {
+            keys.push(Key::Event(m.id));
+            items.push(Item::Event(match &m.sender {
+                _ if m.is_from_me => "You unsent a message".into(),
+                Some(s) => format!("{} unsent a message", cx.names.short(s)),
+                None => "Someone unsent a message".into(),
+            }));
+        }
         prev = Some(m);
     }
     if cx.typing {
@@ -827,6 +841,50 @@ mod tests {
         assert_eq!(on(&m, vec![tapback(2, 1, "love")]), (1, 1, 0, 0));
         // A part that isn't shown goes on the text.
         assert_eq!(on(&m, vec![tapback(2, 5, "love")]), (1, 0, 0, 1));
+    }
+
+    #[test]
+    fn an_unsent_message_is_a_note_and_loses_its_receipt() {
+        let mut a = msg(1, None, "Staying over for a bit?", T0);
+        a.date_delivered = Some(T0 + 500);
+        a.date_read = Some(T0 + 600);
+        // As Messages records an unsend: edited, its part listed as
+        // retracted, no parts left, and no date_retracted. The old text
+        // can linger in the cache.
+        let mut b = msg(2, None, "Turned off location?", T0 + 1000);
+        b.date_delivered = Some(T0 + 1500);
+        b.date_read = Some(T0 + 2000);
+        b.date_edited = Some(T0 + 3000);
+        b.part_count = Some(0);
+        b.summary_info = Some(serde_json::json!([{ "retractedParts": [0] }]));
+        let t = build_with(&[a, b.clone()], false, false);
+        let bs = bubbles(&t);
+        assert_eq!(bs.len(), 1);
+        assert!(matches!(&bs[0].receipt, Some(Receipt::Status(s)) if s.starts_with("Read ")));
+        assert!(
+            t.items
+                .contains(&Item::Event("You unsent a message".into()))
+        );
+        // Apple's own key for the parts is `rp`.
+        b.summary_info = Some(serde_json::json!([{ "rp": [0] }]));
+        assert!(b.is_unsent());
+        // An edit alone isn't an unsend.
+        b.summary_info = None;
+        assert!(!b.is_unsent());
+    }
+
+    #[test]
+    fn a_partly_unsent_message_keeps_the_rest() {
+        let mut m = msg(1, Some("a"), "\u{fffc}look", T0);
+        m.attachments = vec![attachment("p", "IMG_1.HEIC", None)];
+        m.date_edited = Some(T0 + 1000);
+        m.part_count = Some(1);
+        m.summary_info = Some(serde_json::json!([{ "retractedParts": [0] }]));
+        let t = build_with(&[m], false, false);
+        let b = bubbles(&t)[0];
+        assert!(b.media.is_empty());
+        assert_eq!(b.text.as_deref(), Some("look"));
+        assert!(t.items.contains(&Item::Event("a unsent a message".into())));
     }
 
     #[test]

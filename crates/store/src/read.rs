@@ -111,6 +111,28 @@ impl MessageRow {
     pub fn is_associated(&self) -> bool {
         self.associated_guid.is_some()
     }
+
+    /// The parts unsent from this message (macOS 13+). Messages marks an
+    /// unsend by setting `dateEdited` and listing the parts in the
+    /// summary info's `retractedParts` (`rp` as Apple names it); it
+    /// rarely sets `dateRetracted`.
+    pub fn unsent_parts(&self) -> Vec<i64> {
+        if self.date_edited.is_none() {
+            return Vec::new();
+        }
+        let info = self.summary_info.as_ref();
+        let info = info.and_then(|i| i.get(0)).or(info);
+        info.and_then(|i| i.get("retractedParts").or_else(|| i.get("rp")))
+            .and_then(|p| p.as_array())
+            .map(|p| p.iter().filter_map(|p| p.as_i64()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Unsent entirely: nothing of it is left to show.
+    pub fn is_unsent(&self) -> bool {
+        self.date_retracted.is_some()
+            || (!self.unsent_parts().is_empty() && matches!(self.part_count, None | Some(0)))
+    }
 }
 
 /// A position in a chat's history: messages sort by date, then row id.

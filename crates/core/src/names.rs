@@ -168,7 +168,7 @@ impl Names {
 
     /// The one-line summary of a message.
     pub fn preview(&self, m: &MessageRow) -> String {
-        if m.date_retracted.is_some() {
+        if m.is_unsent() {
             return if m.is_from_me {
                 "You unsent a message".into()
             } else {
