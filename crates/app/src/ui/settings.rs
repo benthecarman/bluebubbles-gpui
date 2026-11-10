@@ -5,6 +5,8 @@
 use crate::shell::{self, Shell};
 use crate::sound::Sound;
 use bb_ui::{ActiveTheme, Icon, Preference, Theme, icon};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -251,32 +253,30 @@ impl Render for Settings {
             Some(Test::Failed(e)) => Some(e.clone().into()),
         };
 
+        // A menu, as Messages' Text Tone list is: too many to show at once.
         let chosen = config.notification_sound();
-        let sounds = div()
-            .flex()
-            .p(px(2.))
-            .gap(px(2.))
-            .rounded(px(8.))
-            .bg(colors.search_field)
-            .children(Sound::ALL.into_iter().map(|sound| {
-                let selected = chosen == sound;
-                div()
-                    .id(sound.key())
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(6.))
-                    .text_size(m.body())
-                    .cursor_pointer()
-                    .when(selected, |d| {
-                        d.bg(colors.window).shadow_sm().text_color(colors.text)
-                    })
-                    .when(!selected, |d| d.text_color(colors.text_secondary))
-                    .child(sound.label())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.choose_sound(sound, cx);
-                        cx.refresh_windows();
-                    }))
-            }));
+        let this = cx.entity().downgrade();
+        let sounds = Button::new("sound")
+            .outline()
+            .label(chosen.label().trim_end_matches('…'))
+            .dropdown_caret(true)
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                for sound in Sound::choices() {
+                    let this = this.clone();
+                    if sound == Sound::System {
+                        menu = menu.separator();
+                    }
+                    menu = menu.item(
+                        PopupMenuItem::new(sound.label())
+                            .checked(sound == chosen)
+                            .on_click(move |_, _, cx| {
+                                let _ = this.update(cx, |this, cx| this.choose_sound(sound, cx));
+                                cx.refresh_windows();
+                            }),
+                    );
+                }
+                menu
+            });
 
         let segment = |label: &'static str, value: Preference| {
             let selected = preference == value;
@@ -306,7 +306,7 @@ impl Render for Settings {
 
         let panel = div()
             .id("settings-panel")
-            .w(px(540.))
+            .w(px(500.))
             .max_h(window.viewport_size().height - px(112.))
             .overflow_y_scroll()
             .px(px(24.))

@@ -1,4 +1,5 @@
-//! The sound a notification makes: one of the app's own (made by
+//! The sound a notification makes: Messages' own where the build has it
+//! (see `build.rs`), one of the app's own (made by
 //! `scripts/make-sounds.py`), one the user picked, the desktop theme's,
 //! or none. The desktop plays it, from a file the notification names, so
 //! it follows Do Not Disturb and the per-app sound setting.
@@ -7,9 +8,10 @@ use crate::config::{self, APP_ID};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sound {
-    #[default]
+    /// Messages' received-message sound, in builds that have it.
+    Messages,
     Chime,
     Marimba,
     Glass,
@@ -21,11 +23,23 @@ pub enum Sound {
     None,
 }
 
+/// Messages' sound where the build has it, else Chime.
+impl Default for Sound {
+    fn default() -> Self {
+        if cfg!(messages_sound) {
+            Sound::Messages
+        } else {
+            Sound::Chime
+        }
+    }
+}
+
 /// The longest a picked sound plays.
 const CUSTOM_MAX_SECONDS: &str = "8";
 
 impl Sound {
-    pub const ALL: [Sound; 7] = [
+    pub const ALL: [Sound; 8] = [
+        Sound::Messages,
         Sound::Chime,
         Sound::Marimba,
         Sound::Glass,
@@ -38,6 +52,7 @@ impl Sound {
     /// Its name in the config file.
     pub fn key(self) -> &'static str {
         match self {
+            Sound::Messages => "messages",
             Sound::Chime => "chime",
             Sound::Marimba => "marimba",
             Sound::Glass => "glass",
@@ -49,11 +64,19 @@ impl Sound {
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|s| s.key() == key)
+        Self::choices().find(|s| s.key() == key)
+    }
+
+    /// The sounds this build offers.
+    pub fn choices() -> impl Iterator<Item = Sound> {
+        Self::ALL
+            .into_iter()
+            .filter(|s| *s != Sound::Messages || cfg!(messages_sound))
     }
 
     pub fn label(self) -> &'static str {
         match self {
+            Sound::Messages => "Messages",
             Sound::Chime => "Chime",
             Sound::Marimba => "Marimba",
             Sound::Glass => "Glass",
@@ -66,6 +89,10 @@ impl Sound {
 
     fn bytes(self) -> Option<&'static [u8]> {
         Some(match self {
+            #[cfg(messages_sound)]
+            Sound::Messages => include_bytes!("../../../assets/private/received-message.oga"),
+            #[cfg(not(messages_sound))]
+            Sound::Messages => return None,
             Sound::Chime => include_bytes!("../../../assets/sounds/chime.oga"),
             Sound::Marimba => include_bytes!("../../../assets/sounds/marimba.oga"),
             Sound::Glass => include_bytes!("../../../assets/sounds/glass.oga"),
@@ -194,9 +221,13 @@ mod tests {
 
     #[test]
     fn keys_round_trip_and_files_are_written() {
-        for s in Sound::ALL {
+        for s in Sound::choices() {
             assert_eq!(Sound::from_key(s.key()), Some(s));
         }
+        assert_eq!(
+            Sound::choices().any(|s| s == Sound::Messages),
+            cfg!(messages_sound)
+        );
         assert_eq!(Sound::from_key("tri-tone"), None);
         let file = Sound::Pop.file().unwrap();
         assert!(std::fs::read(&file).unwrap().starts_with(b"OggS"));

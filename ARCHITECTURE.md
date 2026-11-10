@@ -195,11 +195,14 @@ clears after 60 s without an update.
   from unread to read for any reason, such as being read on the phone.
   Settings has a test button that reports which notification server
   answered.
-- The notification sound is one of the app's own (Chime, Marimba, Glass,
-  Pop), a file the user picks (converted to Ogg Vorbis with `ffmpeg`,
+- The notification sound is Messages' received-message sound in
+  builds that have it (it is Apple's, so it stays out of the repo, in
+  the ignored `assets/private/`; `crates/app/build.rs` builds it in when
+  present and says how to get it), one of the app's own (Chime,
+  Marimba, Glass, Pop), a file the user picks (converted to Ogg Vorbis with `ffmpeg`,
   since the desktop's player reads only Ogg and WAV, and kept as
   `~/.local/share/bluebubbles-gpui/custom-sound.oga`), the theme's
-  `message-new-instant`, or none, chosen in Settings.
+  `message-new-instant`, or none, chosen from a menu in Settings.
   The app's sounds are built in and written to the cache, and the
   notification names the file (`sound-file`), so the desktop plays it
   and Do Not Disturb still silences it. Choosing one plays it with

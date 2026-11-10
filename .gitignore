@@ -7,3 +7,6 @@ __pycache__/
 # Upstream BlueBubbles sources, cloned as read-only reference.
 /third_party/bluebubbles-app
 /third_party/bluebubbles-server
+# Sounds that can't be published (Apple's), built into local builds only;
+# see crates/app/build.rs.
+/assets/private
