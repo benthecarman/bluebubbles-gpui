@@ -4,6 +4,7 @@
 //! anywhere withdraws it.
 
 use crate::config::APP_ID;
+use crate::sound::Sound;
 use bb_core::{Names, Notification, Region};
 use bb_store::Store;
 use futures::StreamExt;
@@ -71,11 +72,11 @@ pub enum Response {
 }
 
 enum Request {
-    Show(Notification, Option<Picture>),
+    Show(Notification, Option<Picture>, Sound),
     Withdraw(i64),
     /// Sends a sample notification; answers with the notification
     /// server's name and version, or why it couldn't.
-    Test(oneshot::Sender<Result<String, String>>),
+    Test(oneshot::Sender<Result<String, String>>, Sound),
 }
 
 /// An RGBA picture for the `image-data` hint.
@@ -121,12 +122,12 @@ impl Notifier {
     }
 
     /// Shows `n` with the sender's photo, read off the UI thread.
-    pub fn show(&self, n: Notification, executor: &gpui_kit::BackgroundExecutor) {
+    pub fn show(&self, n: Notification, sound: Sound, executor: &gpui_kit::BackgroundExecutor) {
         let (store, region, requests) = (self.store.clone(), self.region, self.requests.clone());
         executor
             .spawn(async move {
                 let picture = n.sender.as_deref().and_then(|s| picture(&store, region, s));
-                let _ = requests.unbounded_send(Request::Show(n, picture));
+                let _ = requests.unbounded_send(Request::Show(n, picture, sound));
             })
             .detach();
     }
@@ -137,9 +138,9 @@ impl Notifier {
 
     /// Sends a sample notification. Resolves to the desktop's notification
     /// server ("gnome-shell 50.0"), or the reason none showed.
-    pub async fn test(&self) -> Result<String, String> {
+    pub async fn test(&self, sound: Sound) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.requests.unbounded_send(Request::Test(tx));
+        let _ = self.requests.unbounded_send(Request::Test(tx, sound));
         rx.await
             .unwrap_or_else(|_| Err("The desktop's notification service can't be reached".into()))
     }
@@ -186,7 +187,7 @@ async fn run(
         futures::select! {
             request = requests.next() => match request {
                 None => return Ok(()),
-                Some(Request::Show(n, picture)) => {
+                Some(Request::Show(n, picture, sound)) => {
                     if capabilities.is_none() {
                         capabilities = proxy.get_capabilities().await.ok();
                     }
@@ -194,7 +195,7 @@ async fn run(
                     let (markup, actions) = (has("body-markup"), has("actions"));
                     let replaces = shown.get(&n.chat_id).copied().unwrap_or(0);
                     let (summary, body) = text(&n, markup);
-                    let mut hints = base_hints();
+                    let mut hints = base_hints(sound);
                     if let Some(p) = picture {
                         let image = Structure::from((
                             p.width as i32,
@@ -227,7 +228,7 @@ async fn run(
                         Err(e) => tracing::warn!("notify: {e}"),
                     }
                 }
-                Some(Request::Test(reply)) => {
+                Some(Request::Test(reply, sound)) => {
                     let server = proxy
                         .get_server_information()
                         .await
@@ -241,7 +242,7 @@ async fn run(
                             "Notifications are on",
                             "New messages will show like this.",
                             actions,
-                            base_hints(),
+                            base_hints(sound),
                             -1,
                         )
                         .await;
@@ -297,13 +298,28 @@ async fn run(
     }
 }
 
-/// What every notification says about the app: GNOME finds its name
-/// and icon, and its per-app settings, through the desktop entry.
-fn base_hints() -> HashMap<&'static str, Value<'static>> {
+/// What every notification says about the app (GNOME finds its name
+/// and icon, and its per-app settings, through the desktop entry) and
+/// the sound to make.
+fn base_hints(sound: Sound) -> HashMap<&'static str, Value<'static>> {
     let mut hints = HashMap::new();
     hints.insert("desktop-entry", Value::from(APP_ID));
     hints.insert("category", Value::from("im.received"));
-    hints.insert("sound-name", Value::from("message-new-instant"));
+    // The theme's sound stands in if the file can't be written.
+    match (sound, sound.file()) {
+        (Sound::None, _) => {
+            hints.insert("suppress-sound", Value::from(true));
+        }
+        (_, Some(file)) => {
+            hints.insert(
+                "sound-file",
+                Value::from(file.to_string_lossy().into_owned()),
+            );
+        }
+        (_, None) => {
+            hints.insert("sound-name", Value::from("message-new-instant"));
+        }
+    }
     hints
 }
 

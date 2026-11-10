@@ -1,8 +1,9 @@
 //! Settings, over the window: keeping the app in the tray, spellcheck,
-//! notifications (with a test), and appearance. Opened with Ctrl+, the sidebar's gear or
+//! notifications (their sound, and a test), and appearance. Opened with Ctrl+, the sidebar's gear or
 //! the tray menu.
 
 use crate::shell::{self, Shell};
+use crate::sound::Sound;
 use bb_ui::{ActiveTheme, Icon, Preference, Theme, icon};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder;
@@ -191,6 +192,36 @@ impl Render for Settings {
             Some(Test::Failed(e)) => Some(e.clone().into()),
         };
 
+        let chosen = config.notification_sound();
+        let sounds = div()
+            .flex()
+            .p(px(2.))
+            .gap(px(2.))
+            .rounded(px(8.))
+            .bg(colors.search_field)
+            .children(Sound::ALL.into_iter().map(|sound| {
+                let selected = chosen == sound;
+                div()
+                    .id(sound.key())
+                    .px(px(8.))
+                    .py(px(4.))
+                    .rounded(px(6.))
+                    .text_size(m.body())
+                    .cursor_pointer()
+                    .when(selected, |d| {
+                        d.bg(colors.window).shadow_sm().text_color(colors.text)
+                    })
+                    .when(!selected, |d| d.text_color(colors.text_secondary))
+                    .child(sound.label())
+                    .on_click(move |_, _, cx| {
+                        shell::update_config(cx, |c| {
+                            c.notification_sound = Some(sound.key().into())
+                        });
+                        sound.preview();
+                        cx.refresh_windows();
+                    })
+            }));
+
         let segment = |label: &'static str, value: Preference| {
             let selected = preference == value;
             div()
@@ -281,6 +312,7 @@ impl Render for Settings {
                 notify.into_any_element(),
                 None,
             ))
+            .child(row("Sound", sounds.into_any_element(), None))
             .child(row(
                 "Check notifications",
                 test_button.into_any_element(),

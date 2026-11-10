@@ -2,6 +2,7 @@
 //! each server's cache lives. The password is not here: it is in the
 //! keyring (see `credentials`).
 
+use crate::sound::Sound;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -19,6 +20,8 @@ pub struct Config {
     pub keep_running: Option<bool>,
     /// Desktop notifications for new messages (default on).
     pub notifications: Option<bool>,
+    /// The notification sound, by [`Sound::key`] (default chime).
+    pub notification_sound: Option<String>,
     /// Red squiggles under misspelled words in the composer (default on).
     pub spell_check: Option<bool>,
 }
@@ -46,6 +49,13 @@ impl Config {
 
     pub fn notifications(&self) -> bool {
         self.notifications.unwrap_or(true)
+    }
+
+    pub fn notification_sound(&self) -> Sound {
+        self.notification_sound
+            .as_deref()
+            .and_then(Sound::from_key)
+            .unwrap_or_default()
     }
 
     pub fn load() -> Self {

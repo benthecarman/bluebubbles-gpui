@@ -131,8 +131,9 @@ impl Session {
     /// Sends a sample notification; see [`Notifier::test`].
     pub fn test_notification(&self, cx: &App) -> Task<Result<String, String>> {
         let notifier = self.notifier.clone();
+        let sound = cx.global::<shell::Shell>().config.notification_sound();
         cx.foreground_executor()
-            .spawn(async move { notifier.test().await })
+            .spawn(async move { notifier.test(sound).await })
     }
 
     fn on_event(&mut self, event: EngineEvent, cx: &mut Context<Self>) {
@@ -153,9 +154,11 @@ impl Session {
                 cx.emit(SessionEvent::Typing { chat_id });
             }
             EngineEvent::Notify(n) => {
-                if cx.global::<shell::Shell>().config.notifications() {
+                let config = &cx.global::<shell::Shell>().config;
+                if config.notifications() {
                     tracing::info!("notifying for chat {}", n.chat_id);
-                    self.notifier.show(n, cx.background_executor());
+                    let sound = config.notification_sound();
+                    self.notifier.show(n, sound, cx.background_executor());
                 }
             }
             EngineEvent::ChatRead { chat_id } => self.notifier.withdraw(chat_id),

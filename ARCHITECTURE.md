@@ -195,6 +195,12 @@ clears after 60 s without an update.
   from unread to read for any reason, such as being read on the phone.
   Settings has a test button that reports which notification server
   answered.
+- The notification sound is one of the app's own (Chime, Marimba, Glass,
+  Pop), the theme's `message-new-instant`, or none, chosen in Settings.
+  The app's sounds are built in and written to the cache, and the
+  notification names the file (`sound-file`), so the desktop plays it
+  and Do Not Disturb still silences it. Choosing one plays it with
+  `pw-play` or `paplay`. `scripts/make-sounds.py` synthesizes them.
 - A StatusNotifierItem puts the app in the top bar (GNOME needs the
   AppIndicator extension, which Ubuntu turns on). It has Open, Settings
   and Quit, and Mark All as Read and a red dot while conversations are

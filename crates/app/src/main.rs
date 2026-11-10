@@ -9,6 +9,7 @@ mod notify;
 mod runtime;
 mod session;
 mod shell;
+mod sound;
 mod spell;
 mod tray;
 mod ui;

@@ -7,6 +7,11 @@ The app icon (`assets/icons/bluebubbles-*.png`) is resized from
 Apache License 2.0. This project is an independent client for the
 BlueBubbles Server and is not affiliated with the BlueBubbles project.
 
+## Sounds
+
+The notification sounds (`assets/sounds`) are this project's own,
+synthesized by `scripts/make-sounds.py`, under its license.
+
 ## Dictionary
 
 The en_US Hunspell dictionary (`assets/dictionaries`) is version
