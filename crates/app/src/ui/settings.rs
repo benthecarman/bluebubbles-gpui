@@ -25,6 +25,8 @@ enum Test {
 pub struct Settings {
     focus: FocusHandle,
     test: Option<Test>,
+    /// What became of the last custom sound picked.
+    sound_note: Option<SharedString>,
 }
 
 impl EventEmitter<SettingsEvent> for Settings {}
@@ -44,11 +46,68 @@ impl Settings {
         Self {
             focus: cx.focus_handle(),
             test: None,
+            sound_note: None,
         }
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
         cx.emit(SettingsEvent::Close);
+    }
+
+    /// Uses `sound` and plays it. Custom asks for a file first.
+    fn choose_sound(&mut self, sound: Sound, cx: &mut Context<Self>) {
+        if sound != Sound::Custom {
+            shell::update_config(cx, |c| c.notification_sound = Some(sound.key().into()));
+            sound.preview();
+            self.sound_note = None;
+            cx.notify();
+            return;
+        }
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Use Sound".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let path = match picked.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Err(e)) => {
+                    let note = format!("Couldn't open a file picker: {e}");
+                    let _ = this.update(cx, |this, cx| {
+                        this.sound_note = Some(note.into());
+                        cx.notify();
+                    });
+                    None
+                }
+                _ => None,
+            };
+            let Some(path) = path else {
+                return;
+            };
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let imported = cx
+                .background_executor()
+                .spawn(async move { Sound::import(&path) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.sound_note = Some(match imported {
+                    Ok(()) => {
+                        shell::update_config(cx, |c| {
+                            c.notification_sound = Some(Sound::Custom.key().into())
+                        });
+                        Sound::Custom.preview();
+                        format!("Using {name}.").into()
+                    }
+                    Err(e) => e.into(),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn send_test(&mut self, cx: &mut Context<Self>) {
@@ -213,13 +272,10 @@ impl Render for Settings {
                     })
                     .when(!selected, |d| d.text_color(colors.text_secondary))
                     .child(sound.label())
-                    .on_click(move |_, _, cx| {
-                        shell::update_config(cx, |c| {
-                            c.notification_sound = Some(sound.key().into())
-                        });
-                        sound.preview();
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.choose_sound(sound, cx);
                         cx.refresh_windows();
-                    })
+                    }))
             }));
 
         let segment = |label: &'static str, value: Preference| {
@@ -250,7 +306,7 @@ impl Render for Settings {
 
         let panel = div()
             .id("settings-panel")
-            .w(px(500.))
+            .w(px(540.))
             .max_h(window.viewport_size().height - px(112.))
             .overflow_y_scroll()
             .px(px(24.))
@@ -312,7 +368,11 @@ impl Render for Settings {
                 notify.into_any_element(),
                 None,
             ))
-            .child(row("Sound", sounds.into_any_element(), None))
+            .child(row(
+                "Sound",
+                sounds.into_any_element(),
+                self.sound_note.clone(),
+            ))
             .child(row(
                 "Check notifications",
                 test_button.into_any_element(),

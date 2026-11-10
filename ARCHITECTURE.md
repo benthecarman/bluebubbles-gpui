@@ -196,7 +196,10 @@ clears after 60 s without an update.
   Settings has a test button that reports which notification server
   answered.
 - The notification sound is one of the app's own (Chime, Marimba, Glass,
-  Pop), the theme's `message-new-instant`, or none, chosen in Settings.
+  Pop), a file the user picks (converted to Ogg Vorbis with `ffmpeg`,
+  since the desktop's player reads only Ogg and WAV, and kept as
+  `~/.local/share/bluebubbles-gpui/custom-sound.oga`), the theme's
+  `message-new-instant`, or none, chosen in Settings.
   The app's sounds are built in and written to the cache, and the
   notification names the file (`sound-file`), so the desktop plays it
   and Do Not Disturb still silences it. Choosing one plays it with
