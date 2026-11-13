@@ -702,6 +702,20 @@ impl Render for Composer {
                             .child(
                                 div()
                                     .relative()
+                                    // Ctrl+C with nothing selected here copies
+                                    // text selected in the transcript.
+                                    .capture_action(cx.listener(|this, _: &Copy, window, cx| {
+                                        if this.input.read(cx).selected_range().is_empty() {
+                                            let text =
+                                                base::TextSelection::selected_text(window, cx);
+                                            if !text.trim().is_empty() {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    text,
+                                                ));
+                                                cx.stop_propagation();
+                                            }
+                                        }
+                                    }))
                                     // While the emoji list shows, its keys
                                     // go to it rather than the field.
                                     .capture_action(cx.listener(|this, a: &Enter, window, cx| {

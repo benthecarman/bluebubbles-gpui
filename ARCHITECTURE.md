@@ -132,8 +132,12 @@ group together and only the last has a tail. Timestamps separate gaps over
 30 minutes. "Delivered" and "Read" sit under the last message they apply
 to. Tapbacks open from right-click on the photo, file or text they're
 for, and their badge sits on that part's corner. Replies show the
-quoted message above. A typing bubble animates while someone types and
-clears after 60 s without an update.
+quoted message above. A message's text can be selected with the mouse
+(`ui/message_text.rs`, gpui-base's window text selection with links
+added) and copied with Ctrl+C, even while the message field has focus,
+or with Copy, which takes the selection over the whole message. A typing
+bubble animates while someone types and clears after 60 s without an
+update.
 
 - The transcript is GPUI's `list` with bottom alignment and tail
   following. Older pages splice in above without moving the reading

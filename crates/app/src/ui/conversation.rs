@@ -7,6 +7,7 @@
 //! small decoded copies; other files download when clicked and open in
 //! the system's app for them.
 
+use super::message_text::MessageText;
 use crate::session::{Session, SessionEvent};
 use crate::ui::composer::{Composer, ReplyTo};
 use crate::ui::media;
@@ -828,52 +829,36 @@ fn bubble(b: &Item_, rcx: &RenderCx, bottom: Pixels, cx: &mut App) -> AnyElement
         body = body.child(app_card(app, cx));
     }
     if let Some(text) = &b.text {
+        // Selected text shows through a bubble's own color: white on
+        // blue and green, the accent on gray.
+        let selection = match b.kind {
+            Kind::Received => colors.accent.opacity(0.3),
+            Kind::IMessage | Kind::Sms => white().opacity(0.35),
+        };
+        let words = MessageText::new(("text", id as u64), text.clone().into(), selection);
         if b.jumbo {
             body = body.child(
                 div()
                     .text_size(m.jumbo_emoji())
                     .line_height(m.jumbo_emoji() * 1.15)
-                    .child(text.clone()),
+                    .child(words),
             );
         } else {
-            let mut words = div()
+            let mut inner = div()
                 .px(m.bubble_pad_x())
                 .py(m.bubble_pad_y())
                 .text_size(m.message_text())
                 .line_height(m.message_line())
                 .text_color(fg);
             if let Some(subject) = b.row.subject.as_deref().filter(|s| !s.trim().is_empty()) {
-                words = words.child(
+                inner = inner.child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(subject.to_owned()),
                 );
             }
-            let links = transcript::links(text);
-            if links.is_empty() {
-                words = words.child(text.clone());
-            } else {
-                let underline = HighlightStyle {
-                    underline: Some(UnderlineStyle {
-                        thickness: px(1.),
-                        color: Some(fg),
-                        wavy: false,
-                    }),
-                    ..Default::default()
-                };
-                let styled = StyledText::new(text.clone())
-                    .with_highlights(links.iter().map(|(r, _)| (r.clone(), underline)));
-                let urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
-                words = words.child(InteractiveText::new(("text", id as u64), styled).on_click(
-                    links.into_iter().map(|(r, _)| r).collect(),
-                    move |ix, _, cx| {
-                        if let Some(url) = urls.get(ix) {
-                            cx.open_url(url);
-                        }
-                    },
-                ));
-            }
-            body = body.child(Bubble::new(fill, m.bubble_radius(), tail).child(words));
+            let words = words.links(transcript::links(text), fg);
+            body = body.child(Bubble::new(fill, m.bubble_radius(), tail).child(inner.child(words)));
         }
     }
 
@@ -1058,7 +1043,9 @@ fn with_menu(
         text: rcx.names.preview(&b.row),
     };
     content
-        .context_menu(move |mut menu, _, _| {
+        .context_menu(move |mut menu, window, cx| {
+            // Read now: clicking the menu clears the selection.
+            let selected = base::TextSelection::selected_text(window, cx);
             if failed {
                 let session_ = session.clone();
                 menu = menu.item(PopupMenuItem::new("Try Again").on_click(move |_, _, cx| {
@@ -1120,8 +1107,15 @@ fn with_menu(
                 if actionable || failed {
                     menu = menu.separator();
                 }
+                // The selected part of this message, or all of it.
+                let selected = selected.trim();
+                let copy = if !selected.is_empty() && text.contains(selected) {
+                    selected.to_owned()
+                } else {
+                    text.clone()
+                };
                 menu = menu.item(PopupMenuItem::new("Copy").on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
                 }));
             }
             menu
