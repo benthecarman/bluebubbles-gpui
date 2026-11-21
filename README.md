@@ -1,6 +1,6 @@
 # BlueBubbles GPUI
 
-A native Linux client for the
+A native Linux and Windows client for the
 [BlueBubbles Server](https://github.com/BlueBubblesApp/bluebubbles-server),
 written in Rust with [GPUI](https://github.com/zed-industries/zed). It
 looks and behaves like Apple's Messages and works with or without the
@@ -31,6 +31,21 @@ To build an Ubuntu `.deb` (needs Docker):
 ```sh
 scripts/package-deb.sh   # -> dist/bluebubbles-gpui_<version>-1_amd64.deb
 ```
+
+### Windows
+
+Build on Windows, with Rust 1.95 or newer and Visual Studio's C++ build
+tools with the Windows SDK, which has the shader compiler (`fxc.exe`)
+and resource compiler the build uses:
+
+```sh
+cargo build --release -p bluebubbles-gpui
+target\release\bluebubbles-gpui.exe
+```
+
+The password goes in Credential Manager, notifications are Windows
+toasts, and the tray icon is in the notification area. Video previews
+need `ffmpeg` on the `PATH`.
 
 ## Try it without a Mac
 
