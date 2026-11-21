@@ -84,8 +84,9 @@ fn circle(face: &Face, size: Pixels, cx: &App) -> AnyElement {
                 linear_color_stop(colors.avatar_top, 0.),
                 linear_color_stop(colors.avatar_bottom, 1.),
             ))
-            .items_end()
-            .child(icon(Icon::Person, size * 0.78).text_color(white()))
+            // Centered: the glyph has room under its shoulders, so on
+            // the bottom edge it sat low.
+            .child(icon(Icon::Person, size * 0.72).text_color(white()))
             .into_any_element(),
     }
 }
