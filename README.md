@@ -47,6 +47,17 @@ The password goes in Credential Manager, notifications are Windows
 toasts, and the tray icon is in the notification area. Video previews
 need `ffmpeg` on the `PATH`.
 
+To build the installer (needs `cargo install cargo-wix` and the
+[WiX Toolset 3](https://github.com/wixtoolset/wix3/releases) binaries):
+
+```powershell
+scripts\package-msi.ps1 -WixBin C:\path\to\wix314   # -> dist\bluebubbles-gpui_<version>_x64.msi
+```
+
+It installs for all users under Program Files, with a Start menu entry
+and an entry in Installed apps to uninstall it. A newer build installed
+over it replaces it, closing the app if it's running.
+
 ## Try it without a Mac
 
 `bb-mock` is a fake server with demo conversations:

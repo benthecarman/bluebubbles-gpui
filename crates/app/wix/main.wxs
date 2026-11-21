@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="windows-1252"?>
+<!--
+  The Windows installer (WiX Toolset 3), built by cargo-wix through
+  scripts/package-msi.ps1. It installs BlueBubbles.exe for all users
+  under Program Files, adds it to the Start menu and to Installed apps,
+  and replaces any earlier install, including one of the same version.
+
+  Keep the UpgradeCode: installers with the same one upgrade each other.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <Product Id="*"
+           Name="BlueBubbles"
+           UpgradeCode="AE003714-930F-48A3-B189-7B94C85595E2"
+           Manufacturer="BlueBubbles GPUI contributors"
+           Language="1033"
+           Codepage="1252"
+           Version="$(var.Version)">
+
+    <Package Id="*"
+             Description="BlueBubbles: iMessage through your Mac's BlueBubbles Server"
+             Manufacturer="BlueBubbles GPUI contributors"
+             InstallerVersion="500"
+             Languages="1033"
+             Compressed="yes"
+             InstallScope="perMachine"
+             SummaryCodepage="1252" />
+
+    <!-- Builds keep the version number, so the same version upgrades
+         too; an older one is refused. The old one is removed after the
+         new one is in, which keeps the files in place (the components
+         keep their ids). -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  Schedule="afterInstallExecute"
+                  DowngradeErrorMessage="A newer version of BlueBubbles is already installed." />
+
+    <Media Id="1" Cabinet="BlueBubbles.cab" EmbedCab="yes" />
+
+    <Icon Id="BlueBubbles.ico" SourceFile="$(sys.SOURCEFILEDIR)..\..\..\assets\icons\bluebubbles.ico" />
+    <!-- Its entry in Installed apps. -->
+    <Property Id="ARPPRODUCTICON" Value="BlueBubbles.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/benthecarman/bluebubbles-gpui" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="APPLICATIONFOLDER" Name="BlueBubbles">
+          <Component Id="App" Guid="3F8AAD44-2F28-4435-9693-AEE8A99D7318">
+            <File Id="BlueBubblesExe"
+                  Name="BlueBubbles.exe"
+                  Source="$(var.CargoTargetBinDir)\bluebubbles-gpui.exe"
+                  KeyPath="yes" />
+          </Component>
+          <Component Id="Notices" Guid="FF85F378-CC42-40CC-96D3-828678BD28B0">
+            <File Id="Notice" Name="NOTICE.md" Source="$(sys.SOURCEFILEDIR)..\..\..\NOTICE.md" KeyPath="yes" />
+            <File Id="License" Name="LICENSE.txt" Source="$(sys.SOURCEFILEDIR)..\..\..\LICENSE" />
+          </Component>
+        </Directory>
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder">
+        <Component Id="StartMenuShortcut" Guid="2BFE2D4D-92F5-45CC-B0A9-E83876570FB1">
+          <Shortcut Id="BlueBubblesShortcut"
+                    Name="BlueBubbles"
+                    Description="iMessage through your Mac's BlueBubbles Server"
+                    Target="[APPLICATIONFOLDER]BlueBubbles.exe"
+                    WorkingDirectory="APPLICATIONFOLDER">
+            <!-- The id the app gives itself (notify_windows.rs), so its
+                 notifications and taskbar button belong to this entry. -->
+            <ShortcutProperty Key="System.AppUserModel.ID" Value="BlueBubbles.GPUI" />
+          </Shortcut>
+          <RegistryValue Root="HKCU"
+                         Key="Software\BlueBubbles GPUI"
+                         Name="StartMenuShortcut"
+                         Type="integer"
+                         Value="1"
+                         KeyPath="yes" />
+        </Component>
+      </Directory>
+    </Directory>
+
+    <!-- It keeps running in the tray, which would hold the .exe through
+         an upgrade or uninstall: stop it before any file is touched. -->
+    <util:CloseApplication Id="CloseBlueBubbles"
+                           Target="BlueBubbles.exe"
+                           CloseMessage="yes"
+                           TerminateProcess="0"
+                           RebootPrompt="no" />
+    <InstallExecuteSequence>
+      <Custom Action="WixCloseApplications" After="InstallInitialize" />
+    </InstallExecuteSequence>
+
+    <Feature Id="Main" Title="BlueBubbles" Level="1">
+      <ComponentRef Id="App" />
+      <ComponentRef Id="Notices" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Product>
+</Wix>
