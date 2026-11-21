@@ -21,6 +21,8 @@ pub struct Shell {
     /// The desktop shows tray icons right now.
     tray_shown: bool,
     unread: usize,
+    /// For the dock's unread count.
+    #[cfg(target_os = "linux")]
     bus: Option<zbus::Connection>,
 }
 
@@ -34,6 +36,7 @@ pub fn init(shows: Option<UnboundedReceiver<Option<String>>>, cx: &mut App) {
         tray: None,
         tray_shown: false,
         unread: 0,
+        #[cfg(target_os = "linux")]
         bus: None,
     });
     // Closing the last window quits only when nothing keeps the app in
@@ -57,6 +60,12 @@ pub fn init(shows: Option<UnboundedReceiver<Option<String>>>, cx: &mut App) {
         .detach();
     }
     start_tray(cx);
+    #[cfg(target_os = "linux")]
+    connect_bus(cx);
+}
+
+#[cfg(target_os = "linux")]
+fn connect_bus(cx: &mut App) {
     let bus = cx.background_spawn(zbus::Connection::session());
     cx.spawn(async move |cx| {
         if let Ok(bus) = bus.await {
@@ -71,7 +80,7 @@ pub fn init(shows: Option<UnboundedReceiver<Option<String>>>, cx: &mut App) {
 
 fn start_tray(cx: &mut App) {
     let (tx, mut events) = unbounded();
-    let started = cx.background_spawn(tray::start(tx));
+    let started = tray::start(tx, cx);
     cx.spawn(async move |cx| {
         match started.await {
             Ok(handle) => {
@@ -176,27 +185,36 @@ pub fn set_unread(unread: usize, cx: &mut App) {
 fn publish_unread(cx: &mut App) {
     let shell = cx.global::<Shell>();
     let unread = shell.unread;
-    let (tray, bus) = (shell.tray.clone(), shell.bus.clone());
-    cx.background_spawn(async move {
-        if let Some(tray) = tray {
-            tray.update(|t| t.set_unread(unread)).await;
-        }
-        if let Some(bus) = bus
-            && let Err(e) = crate::badge::set(&bus, unread).await
-        {
-            tracing::debug!("dock badge: {e}");
-        }
-    })
-    .detach();
+    if let Some(tray) = &shell.tray {
+        tray.set_unread(unread, cx);
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(bus) = shell.bus.clone() {
+        cx.background_spawn(async move {
+            if let Err(e) = crate::badge::set(&bus, unread).await {
+                tracing::debug!("dock badge: {e}");
+            }
+        })
+        .detach();
+    }
+}
+
+/// Lets a Wayland compositor raise the window while another app has
+/// focus. Windows needs no token.
+fn use_activation_token(token: Option<String>) {
+    #[cfg(target_os = "linux")]
+    if let Some(token) = token {
+        gpui_linux::set_activation_token(token);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = token;
 }
 
 /// Opens the window, or brings it forward, then opens `chat` in it.
 /// `activation_token` lets a Wayland compositor raise the window while
 /// another app has focus.
 pub fn show(chat: Option<i64>, activation_token: Option<String>, cx: &mut App) {
-    if let Some(token) = activation_token {
-        gpui_linux::set_activation_token(token);
-    }
+    use_activation_token(activation_token);
     let Some((window, workspace)) = front(cx) else {
         return;
     };
@@ -209,9 +227,7 @@ pub fn show(chat: Option<i64>, activation_token: Option<String>, cx: &mut App) {
 
 /// Shows the window with its settings open.
 pub fn show_settings(activation_token: Option<String>, cx: &mut App) {
-    if let Some(token) = activation_token {
-        gpui_linux::set_activation_token(token);
-    }
+    use_activation_token(activation_token);
     let Some((window, workspace)) = front(cx) else {
         return;
     };

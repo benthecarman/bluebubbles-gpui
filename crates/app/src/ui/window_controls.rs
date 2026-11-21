@@ -1,6 +1,8 @@
 //! The window's own title bar: Linux compositors (GNOME on Wayland in
 //! particular) draw none for us, so the top edges of the sidebar and the
-//! conversation are the title bar and carry GNOME's window buttons.
+//! conversation are the title bar and carry GNOME's window buttons. On
+//! Windows the same areas are marked for the system, which then moves,
+//! snaps and maximizes the window and runs its buttons.
 
 use bb_ui::{ActiveTheme, Icon, icon};
 use gpui_kit::*;
@@ -37,6 +39,17 @@ impl Policy {
     }
 }
 
+/// Minimize, maximize and close on the right: GNOME's default, and
+/// Windows' order.
+const DEFAULT_LAYOUT: WindowButtonLayout = WindowButtonLayout {
+    left: [None; 3],
+    right: [
+        Some(WindowButton::Minimize),
+        Some(WindowButton::Maximize),
+        Some(WindowButton::Close),
+    ],
+};
+
 /// Which end of the title bar a group of buttons sits at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -48,9 +61,7 @@ pub enum Side {
 /// gives (minimize, maximize and close on the right unless changed), drawn
 /// as libadwaita draws them. `None` when that side has none.
 pub fn buttons(side: Side, window: &Window, cx: &App) -> Option<impl IntoElement + use<>> {
-    let layout = cx
-        .button_layout()
-        .unwrap_or_else(WindowButtonLayout::linux_default);
+    let layout = cx.button_layout().unwrap_or(DEFAULT_LAYOUT);
     let slots = match side {
         Side::Left => layout.left,
         Side::Right => layout.right,
@@ -90,8 +101,7 @@ pub fn buttons(side: Side, window: &Window, cx: &App) -> Option<impl IntoElement
                     WindowButton::Close => Icon::WindowClose,
                 };
                 not_title_bar(
-                    div()
-                        .id(button.id())
+                    system_area(div().id(button.id()), button)
                         .size(px(24.))
                         .rounded_full()
                         .flex()
@@ -114,6 +124,8 @@ pub fn buttons(side: Side, window: &Window, cx: &App) -> Option<impl IntoElement
 /// Makes an element a title bar: drag to move, double-click to maximize,
 /// right-click for the window menu.
 pub fn title_bar(element: Stateful<Div>) -> Stateful<Div> {
+    #[cfg(windows)]
+    let element = element.window_control_area(WindowControlArea::Drag);
     element
         .on_mouse_down(MouseButton::Left, |event, window, _| {
             if event.click_count == 2 {
@@ -131,9 +143,28 @@ pub fn title_bar(element: Stateful<Div>) -> Stateful<Div> {
 
 /// A control inside a title bar: keeps its clicks from moving the window.
 pub fn not_title_bar<E: InteractiveElement>(element: E) -> E {
+    // Windows asks which area is under the mouse; covering the title bar
+    // makes it this element instead.
+    #[cfg(windows)]
+    let element = element.occlude();
     element
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+}
+
+/// On Windows, the system's own button, so it presses as Windows'
+/// buttons do (and maximize offers snap layouts). Elsewhere the click
+/// handler does the work.
+fn system_area(element: Stateful<Div>, button: WindowButton) -> Stateful<Div> {
+    #[cfg(windows)]
+    let element = element.window_control_area(match button {
+        WindowButton::Minimize => WindowControlArea::Min,
+        WindowButton::Maximize => WindowControlArea::Max,
+        WindowButton::Close => WindowControlArea::Close,
+    });
+    #[cfg(not(windows))]
+    let _ = button;
+    element
 }
 
 #[cfg(test)]

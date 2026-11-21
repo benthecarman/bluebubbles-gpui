@@ -3,25 +3,30 @@
 //! as Read and a red dot while conversations are unread. Plain GNOME
 //! shows it with the AppIndicator extension.
 
+pub use crate::tray_art::TrayEvent;
+use crate::tray_art::{ICON, badge, unread_label};
 use futures::channel::mpsc::UnboundedSender;
+use gpui_kit::{App, AppContext, Task};
 use image::imageops::FilterType;
 use ksni::TrayMethods;
 
-const ICON: &[u8] = include_bytes!("../../../assets/icons/bluebubbles-256.png");
 /// Sizes handed over; the desktop picks the closest to its bar.
 const SIZES: [u32; 4] = [22, 32, 48, 64];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrayEvent {
-    Open,
-    MarkAllRead,
-    Settings,
-    Quit,
-    /// The desktop's tray host came or went.
-    Available(bool),
-}
+/// The running icon.
+#[derive(Clone)]
+pub struct Handle(ksni::Handle<AppTray>);
 
-pub type Handle = ksni::Handle<AppTray>;
+impl Handle {
+    /// Shows the red dot, and the count in the menu, while `unread`.
+    pub fn set_unread(&self, unread: usize, cx: &App) {
+        let handle = self.0.clone();
+        cx.background_spawn(async move {
+            handle.update(|t| t.set_unread(unread)).await;
+        })
+        .detach();
+    }
+}
 
 pub struct AppTray {
     events: UnboundedSender<TrayEvent>,
@@ -42,16 +47,20 @@ impl AppTray {
 
 /// Registers the icon with the desktop's tray host. Fails when there is
 /// none, as on GNOME without the AppIndicator extension.
-pub async fn start(events: UnboundedSender<TrayEvent>) -> Result<Handle, ksni::Error> {
-    let (plain, badged) = icons();
-    AppTray {
-        events,
-        unread: 0,
-        plain,
-        badged,
-    }
-    .spawn()
-    .await
+pub fn start(events: UnboundedSender<TrayEvent>, cx: &App) -> Task<Result<Handle, String>> {
+    cx.background_spawn(async move {
+        let (plain, badged) = icons();
+        AppTray {
+            events,
+            unread: 0,
+            plain,
+            badged,
+        }
+        .spawn()
+        .await
+        .map(Handle)
+        .map_err(|e| e.to_string())
+    })
 }
 
 impl ksni::Tray for AppTray {
@@ -144,14 +153,6 @@ impl ksni::Tray for AppTray {
     }
 }
 
-fn unread_label(unread: usize) -> Option<String> {
-    match unread {
-        0 => None,
-        1 => Some("1 unread conversation".into()),
-        n => Some(format!("{n} unread conversations")),
-    }
-}
-
 /// The app icon at each size, without and with the unread dot.
 fn icons() -> (Vec<ksni::Icon>, Vec<ksni::Icon>) {
     let Ok(icon) = image::load_from_memory(ICON) else {
@@ -168,26 +169,6 @@ fn icons() -> (Vec<ksni::Icon>, Vec<ksni::Icon>) {
             (pixmap(&plain), pixmap(&badged))
         })
         .unzip()
-}
-
-/// A red dot in the top-right corner, ringed in white.
-fn badge(image: &mut image::RgbaImage) {
-    let size = image.width() as f32;
-    let r = size * 0.22;
-    let (cx, cy) = (size - r - 0.5, r + 0.5);
-    for (x, y, p) in image.enumerate_pixels_mut() {
-        let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
-        let ring = (r + 1.0 - d).clamp(0.0, 1.0);
-        let dot = (r - 0.5 - d).clamp(0.0, 1.0);
-        if ring > 0.0 {
-            let (red, white) = ([255.0, 59.0, 48.0], [255.0, 255.0, 255.0]);
-            for i in 0..3 {
-                let over = red[i] * dot + white[i] * (1.0 - dot);
-                p.0[i] = (over * ring + p.0[i] as f32 * (1.0 - ring)) as u8;
-            }
-            p.0[3] = (255.0 * ring + p.0[3] as f32 * (1.0 - ring)) as u8;
-        }
-    }
 }
 
 /// StatusNotifierItem pixmaps are ARGB32 in network byte order.

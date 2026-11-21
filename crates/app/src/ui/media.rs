@@ -9,7 +9,7 @@ use image::codecs::gif::GifDecoder;
 use image::{AnimationDecoder, DynamicImage, Frame, ImageDecoder, ImageFormat, ImageReader};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 
 /// Longest side of a decoded thumbnail, in pixels: two device pixels per
@@ -120,7 +120,7 @@ pub fn video_frame(path: &Path) -> Option<Arc<RenderImage>> {
     let fit = format!(
         "scale='min({THUMB_MAX},iw)':'min({THUMB_MAX},ih)':force_original_aspect_ratio=decrease"
     );
-    let out = Command::new("ffmpeg")
+    let out = crate::process::command("ffmpeg")
         .args(["-v", "error", "-nostdin", "-i"])
         .arg(path)
         .args([
@@ -232,7 +232,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bb-video-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("clip.mov");
-        let made = Command::new("ffmpeg")
+        let made = std::process::Command::new("ffmpeg")
             .args([
                 "-v",
                 "error",
