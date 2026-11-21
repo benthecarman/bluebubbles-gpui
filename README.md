@@ -35,9 +35,8 @@ scripts/package-deb.sh   # -> dist/bluebubbles-gpui_<version>-1_amd64.deb
 ### Windows
 
 Build on Windows, with Rust 1.99 (1.93 is too old for GPUI) and Visual
-Studio's C++ build
-tools with the Windows SDK, which has the shader compiler (`fxc.exe`)
-and resource compiler the build uses:
+Studio's C++ build tools with the Windows SDK, which has the shader
+compiler (`fxc.exe`) and resource compiler the build uses:
 
 ```sh
 cargo build --release -p bluebubbles-gpui
